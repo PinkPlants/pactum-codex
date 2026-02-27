@@ -253,7 +253,7 @@ Max Concurrent: 7 (Waves 1 & 6)
 ---
 
 
-- [ ] 1. **Project Scaffolding + Cargo.toml + Test Infrastructure**
+- [x] 1. **Project Scaffolding + Cargo.toml + Test Infrastructure**
 
   **What to do**:
   - Create the full directory structure per spec §3: `src/`, `src/handlers/`, `src/services/`, `src/workers/`, `src/middleware/`, `migrations/`, `api/`
@@ -327,7 +327,7 @@ Max Concurrent: 7 (Waves 1 & 6)
   - Files: `Cargo.toml`, `src/**/*.rs`, `migrations/`, `api/`, `tests/`
   - Pre-commit: `cargo check`
 
-- [ ] 2. **Error Types (error.rs) — Full AppError Enum**
+- [x] 2. **Error Types (error.rs) — Full AppError Enum**
 
   **What to do**:
   - Create `src/error.rs` with `AppError` enum using `thiserror`
@@ -391,7 +391,7 @@ Max Concurrent: 7 (Waves 1 & 6)
   - Files: `src/error.rs`
   - Pre-commit: `cargo test -- error`
 
-- [ ] 3. **Configuration Module (config.rs + .env.example)**
+- [x] 3. **Configuration Module (config.rs + .env.example)**
 
   **What to do**:
   - Create `src/config.rs` with `Config` struct holding all ~60 env vars from spec §4
@@ -448,7 +448,7 @@ Max Concurrent: 7 (Waves 1 & 6)
   - Files: `src/config.rs`, `.env.example`
   - Pre-commit: `cargo test -- config`
 
-- [ ] 4. **Database Migrations (13+ SQL Files)**
+- [x] 4. **Database Migrations (13+ SQL Files)**
 
   **What to do**:
   - Create all migration SQL files in `migrations/` per spec §5:
@@ -520,7 +520,7 @@ Max Concurrent: 7 (Waves 1 & 6)
   - Files: `migrations/*.sql`
   - Pre-commit: `sqlx migrate run` (if DB available)
 
-- [ ] 5. **AppState + ProtectedKeypair (state.rs)**
+- [x] 5. **AppState + ProtectedKeypair (state.rs)**
 
   **What to do**:
   - Create `src/state.rs` with `AppState` struct exactly per spec §4 (lines 248-262)
@@ -571,7 +571,7 @@ Max Concurrent: 7 (Waves 1 & 6)
   - Files: `src/state.rs`
   - Pre-commit: `cargo test -- state`
 
-- [ ] 6. **Router Skeleton + Middleware Stack (router.rs)**
+- [x] 6. **Router Skeleton + Middleware Stack (router.rs)**
 
   **What to do**:
   - Create `src/router.rs` with `build_router(state: AppState) -> Router` exactly per spec §6
@@ -620,7 +620,7 @@ Max Concurrent: 7 (Waves 1 & 6)
   - Message: `feat(router): skeleton with CORS, rate limiting, tracing middleware`
   - Files: `src/router.rs`
 
-- [ ] 7. **Solana Constants + Types Module**
+- [x] 7. **Solana Constants + Types Module**
 
   **What to do**:
   - Create `src/solana_types.rs` (or `src/types/`) with Rust types mirroring the on-chain program:
@@ -1074,7 +1074,7 @@ Max Concurrent: 7 (Waves 1 & 6)
   - Pre-commit: `cargo test -- notification`
 
 
-- [ ] 14. **JWT Middleware Extractor: AuthUser + AuthUserWithWallet (middleware/)**
+- [x] 14. **JWT Middleware Extractor: AuthUser + AuthUserWithWallet (middleware/)**
 
   **What to do**:
   - Create `src/middleware/auth.rs` with `AuthUser` extractor per spec §7.4:
@@ -1139,7 +1139,7 @@ Max Concurrent: 7 (Waves 1 & 6)
   - Files: `src/middleware/auth.rs`, `src/middleware/wallet_guard.rs`
   - Pre-commit: `cargo test -- middleware`
 
-- [ ] 15. **SIWS Auth: Challenge + Verify (handlers/auth.rs - SIWS)**
+- [x] 15. **SIWS Auth: Challenge + Verify (handlers/auth.rs - SIWS)**
 
   **What to do**:
   - Implement `GET /auth/challenge` handler per spec §7.1:
@@ -1208,7 +1208,7 @@ Max Concurrent: 7 (Waves 1 & 6)
   - Files: `src/handlers/auth.rs`
   - Pre-commit: `cargo test -- handlers::auth`
 
-- [ ] 16. **Token Refresh + Logout (handlers/auth.rs - refresh)**
+- [x] 16. **Token Refresh + Logout (handlers/auth.rs - refresh)**
 
   **What to do**:
   - Implement `POST /auth/refresh` handler per spec §7.5:

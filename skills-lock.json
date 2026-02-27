@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "coding-guidelines": {
+      "source": "zhanghandong/rust-skills",
+      "sourceType": "github",
+      "computedHash": "0742312a0de5eb6bd84e093c1815b1db98126130b92713ea5fc2cf902338aa3b"
+    }
+  }
+}

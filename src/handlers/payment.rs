@@ -1,0 +1,1 @@
+// Stub — handlers/payment.rs

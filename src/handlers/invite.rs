@@ -1,0 +1,1 @@
+// Stub — handlers/invite.rs

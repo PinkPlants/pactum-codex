@@ -1,0 +1,1 @@
+// Stub — handlers/draft.rs
