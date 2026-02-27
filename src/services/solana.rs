@@ -209,3 +209,165 @@ mod tests {
         assert_eq!(parsed.to_string(), PROGRAM_ID);
     }
 }
+
+// ===== TRANSACTION CONSTRUCTION =====
+
+use crate::config::Config;
+use crate::solana_types::CreateAgreementArgs;
+use crate::state::ProtectedKeypair;
+use solana_sdk::{
+    message::Message,
+    signature::Signer,
+    system_instruction,
+    transaction::Transaction,
+};
+
+/// Build create_agreement transaction (partially signed by vault)
+pub async fn build_create_agreement_tx(
+    rpc: &RpcClient,
+    args: &CreateAgreementArgs,
+    creator: &Pubkey,
+    vault_keypair: &ProtectedKeypair,
+    _config: &Config,
+) -> Result<String, AppError> {
+    // 1. Derive PDAs
+    let (agreement_pda, _agreement_bump) = derive_agreement_pda(creator, &args.agreement_id);
+    let (mint_vault_pda, _vault_bump) = derive_mint_vault_pda(&agreement_pda);
+    
+    // 2. Calculate vault deposit
+    let vault_deposit = calculate_vault_deposit(AGREEMENT_STATE_SIZE);
+    
+    // 3. Build vault transfer instruction
+    let vault_transfer_ix = system_instruction::transfer(
+        &vault_keypair.0.pubkey(),
+        &mint_vault_pda,
+        vault_deposit,
+    );
+    
+    // 4. Build create_agreement instruction
+    let create_ix = build_create_agreement_instruction(args, creator, &agreement_pda)?;
+    
+    // 5. Assemble transaction
+    let recent_blockhash = rpc
+        .get_latest_blockhash()
+        .map_err(|_| AppError::SolanaRpcError)?;
+    
+    let mut tx = Transaction::new_unsigned(Message::new(
+        &[vault_transfer_ix, create_ix],
+        Some(&vault_keypair.0.pubkey()),
+    ));
+    
+    // 6. Partial sign with vault keypair
+    tx.try_partial_sign(&[&vault_keypair.0], recent_blockhash)
+        .map_err(|_| AppError::TransactionSigningFailed)?;
+    
+    // 7. Serialize to base64
+    let serialized = bincode::serialize(&tx).map_err(|_| AppError::InternalError)?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(serialized))
+}
+
+fn build_create_agreement_instruction(
+    args: &CreateAgreementArgs,
+    creator: &Pubkey,
+    agreement_pda: &Pubkey,
+) -> Result<Instruction, AppError> {
+    use borsh::BorshSerialize;
+    
+    let program_id = pactum_program_pubkey();
+    
+    // Serialize args with borsh
+    let args_data = args.try_to_vec().map_err(|_| AppError::InternalError)?;
+    
+    // Build instruction data: discriminator + args
+    let mut data = Vec::with_capacity(8 + args_data.len());
+    data.extend_from_slice(&CREATE_AGREEMENT_DISCRIMINATOR);
+    data.extend_from_slice(&args_data);
+    
+    // Account metas (simplified - real implementation needs all accounts)
+    let accounts = vec![
+        AccountMeta::new(*creator, true),              // creator (signer)
+        AccountMeta::new(*agreement_pda, false),       // agreement PDA
+        AccountMeta::new_readonly(solana_sdk::system_program::id(), false), // system_program
+    ];
+    
+    Ok(Instruction {
+        program_id,
+        accounts,
+        data,
+    })
+}
+
+/// Build sign_agreement transaction (unsigned - party signs client-side)
+pub async fn build_sign_agreement_tx(
+    rpc: &RpcClient,
+    creator: &Pubkey,
+    agreement_id: &[u8; 16],
+    signer: &Pubkey,
+    metadata_uri: Option<String>,
+) -> Result<String, AppError> {
+    use borsh::BorshSerialize;
+    use crate::solana_types::SignAgreementArgs;
+    
+    // 1. Derive agreement PDA
+    let (agreement_pda, _) = derive_agreement_pda(creator, agreement_id);
+    
+    // 2. Build sign_agreement instruction
+    let args = SignAgreementArgs { metadata_uri };
+    let args_data = args.try_to_vec().map_err(|_| AppError::InternalError)?;
+    
+    let mut data = Vec::with_capacity(8 + args_data.len());
+    data.extend_from_slice(&SIGN_AGREEMENT_DISCRIMINATOR);
+    data.extend_from_slice(&args_data);
+    
+    let program_id = pactum_program_pubkey();
+    
+    let accounts = vec![
+        AccountMeta::new(*signer, true),               // signer (party)
+        AccountMeta::new(agreement_pda, false),        // agreement PDA
+        AccountMeta::new_readonly(solana_sdk::system_program::id(), false), // system_program
+    ];
+    
+    let instruction = Instruction {
+        program_id,
+        accounts,
+        data,
+    };
+    
+    // 3. Create unsigned transaction
+    let recent_blockhash = rpc
+        .get_latest_blockhash()
+        .map_err(|_| AppError::SolanaRpcError)?;
+    
+    let tx = Transaction::new_unsigned(Message::new(
+        &[instruction],
+        Some(signer),
+    ));
+    
+    // Note: recent_blockhash is included but tx is NOT signed
+    let mut signed_tx = tx;
+    signed_tx.message.recent_blockhash = recent_blockhash;
+    
+    // 4. Serialize to base64
+    let serialized = bincode::serialize(&signed_tx).map_err(|_| AppError::InternalError)?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(serialized))
+}
+
+// Stubs for other TX types
+pub async fn build_cancel_agreement_tx(
+    _rpc: &RpcClient,
+    _creator: &Pubkey,
+    _agreement_id: &[u8; 16],
+    _canceller: &Pubkey,
+) -> Result<String, AppError> {
+    // TODO: Implement cancel_agreement TX construction
+    Err(AppError::NotImplemented)
+}
+
+pub async fn build_expire_agreement_tx(
+    _rpc: &RpcClient,
+    _creator: &Pubkey,
+    _agreement_id: &[u8; 16],
+) -> Result<String, AppError> {
+    // TODO: Implement expire_agreement TX construction
+    Err(AppError::NotImplemented)
+}

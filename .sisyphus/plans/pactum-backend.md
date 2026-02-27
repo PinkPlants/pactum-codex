@@ -1409,7 +1409,7 @@ Max Concurrent: 7 (Waves 1 & 6)
   - Pre-commit: `cargo build`
 
 
-- [ ] 19. **create_agreement TX Construction (services/solana.rs - create)**
+- [x] 19. **create_agreement TX Construction (services/solana.rs - create)**
 
   **What to do**:
   - Implement `build_create_agreement_tx()` in `services/solana.rs` per spec §11.3:
@@ -1464,7 +1464,7 @@ Max Concurrent: 7 (Waves 1 & 6)
   - Files: `src/services/solana.rs`
   - Pre-commit: `cargo test -- services::solana`
 
-- [ ] 20. **sign_agreement TX Construction (services/solana.rs - sign)**
+- [x] 20. **sign_agreement TX Construction (services/solana.rs - sign)**
 
   **What to do**:
   - Implement `build_sign_agreement_tx()` in `services/solana.rs`:
