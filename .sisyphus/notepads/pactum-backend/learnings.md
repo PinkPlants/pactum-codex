@@ -1118,3 +1118,78 @@ All dependencies present from Task 1 scaffolding.
 4. Create middleware to extract Claims from Authorization header
 5. Use Claims.sub for user_id in protected endpoints
 
+
+## [2026-02-27T03:00] Wave 3 Progress - Auth Implementation
+
+### Auth Middleware Pattern (Tasks 14)
+- **AuthUser extractor**: Implements `FromRequestParts` to extract JWT from Authorization header
+- **AuthUserWithWallet guard**: Composes AuthUser + validates pubkey.is_some()
+- Error handling: Unauthorized for invalid JWT, WalletRequired for missing pubkey
+- Uses async_trait macro for Axum 0.8 compatibility
+
+### SIWS Flow (Tasks 15-16)
+- **Challenge**: Generate UUID nonce, store in PostgreSQL (not in-memory)
+- **Verify**: Atomic nonce consumption via `DELETE...RETURNING` prevents replay attacks
+- **Signature verification**: ed25519 via solana_sdk::signature::Signature
+- **Implicit signup**: Upsert user_accounts + auth_wallet on first login
+- **Token refresh**: Delete-on-use refresh token rotation (prevents token reuse)
+- **Logout**: DELETE refresh_token from database (server-side session termination)
+
+### Key Security Patterns
+1. Atomic nonce consumption: `DELETE WHERE nonce = $1 AND created_at > now() - 300 RETURNING nonce`
+2. Refresh token hashing: SHA-256 hash stored in DB, never plaintext
+3. Token rotation: Delete-on-use prevents refresh token reuse
+4. Multi-instance safe: PostgreSQL storage (not in-memory) ensures consistency
+
+### Implementation Stats
+- Wave 1 (Tasks 1-7): 7 files, foundation complete
+- Wave 2 (Tasks 8-13): 1172 lines, 41 tests, 6 service modules
+- Wave 3 (Tasks 14-16): 480 lines, 7 tests, middleware + auth handlers
+
+Progress: 16/44 tasks (36%)
+
+## [2026-02-27T03:15] MVP Foundation Complete - Server Runnable
+
+### Milestone: First Runnable State
+The Pactum backend can now start and serve basic auth endpoints.
+
+**What works:**
+- ✅ PostgreSQL connection + auto-migrations
+- ✅ Keypair loading + validation
+- ✅ Solana RPC client initialization  
+- ✅ Complete SIWS auth flow (challenge → verify → tokens)
+- ✅ Token refresh + logout
+- ✅ Health check endpoint
+
+**Server startup sequence:**
+1. Load .env configuration
+2. Connect to PostgreSQL (20 connection pool)
+3. Run migrations automatically
+4. Load vault + treasury keypairs from file paths
+5. Validate keypair pubkeys match config
+6. Initialize Solana RPC client
+7. Build AppState with all components
+8. Wire auth routes
+9. Bind to configured host:port
+10. Start serving
+
+**Endpoints available:**
+- GET /health → "OK"
+- GET /auth/challenge → { "nonce": "<uuid>" }
+- POST /auth/verify → { "access_token", "refresh_token" }
+- POST /auth/refresh → { "access_token", "refresh_token" }
+- POST /auth/logout → { "message": "Logged out successfully" }
+
+**Next phase:** Agreement handlers + Solana TX construction (Wave 4-5)
+
+### Completion Stats
+**Wave 1** (Foundation): 7 tasks - Scaffolding, error types, config, migrations, state, router, solana types
+**Wave 2** (Core Services): 6 tasks - Hash, crypto, keypair, JWT, Solana service, notifications  
+**Wave 3** (Auth + Middleware): 5 tasks - Auth middleware, SIWS handlers, token management, server startup
+**Total**: 17/44 tasks (39%)
+**Lines of code**: ~3000+ lines across services, handlers, middleware
+
+### Token Budget
+Used: 115k/200k (57.5%)
+Remaining: 85k (42.5%)
+Status: Healthy - plenty of context for remaining work

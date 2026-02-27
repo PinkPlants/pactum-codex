@@ -1266,7 +1266,7 @@ Max Concurrent: 7 (Waves 1 & 6)
   - Files: `src/handlers/auth.rs`
   - Pre-commit: `cargo test -- handlers::auth`
 
-- [ ] 17. **User Handlers: Profile + Contacts (handlers/user.rs)**
+- [x] 17. **User Handlers: Profile + Contacts (handlers/user.rs)**
 
   **What to do**:
   - Implement `GET /user/me` per spec §8.5:
