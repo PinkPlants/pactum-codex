@@ -1338,7 +1338,7 @@ Max Concurrent: 7 (Waves 1 & 6)
   - Files: `src/handlers/user.rs`
   - Pre-commit: `cargo test -- handlers::user`
 
-- [ ] 18. **main.rs MVP: Wire Foundation + Auth Routes + Server Startup**
+- [x] 18. **main.rs MVP: Wire Foundation + Auth Routes + Server Startup**
 
   **What to do**:
   - Implement `src/main.rs` MVP that wires together foundation + auth:
