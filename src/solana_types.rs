@@ -63,6 +63,36 @@ pub enum StorageBackend {
     Arweave = 1,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct RevokeRetractEntryWire {
+    pub pubkey: [u8; 32],
+    pub count: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, BorshSerialize, BorshDeserialize)]
+pub struct AgreementStateWire {
+    pub creator: [u8; 32],
+    pub agreement_id: [u8; 16],
+    pub content_hash: [u8; 32],
+    pub title: String,
+    pub storage_uri: String,
+    pub storage_backend: StorageBackend,
+    pub parties: Vec<[u8; 32]>,
+    pub signed_by: Vec<[u8; 32]>,
+    pub signed_at: Vec<i64>,
+    pub status: AgreementStatus,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub completed_at: Option<i64>,
+    pub revoked_at: Option<i64>,
+    pub nft_asset: Option<[u8; 32]>,
+    pub collection: Option<[u8; 32]>,
+    pub vault_funder: [u8; 32],
+    pub revoke_votes: Vec<[u8; 32]>,
+    pub revoke_retract_counts: Vec<RevokeRetractEntryWire>,
+    pub bump: u8,
+}
+
 // ===== INSTRUCTION ARGUMENTS =====
 
 /// Arguments for create_agreement instruction

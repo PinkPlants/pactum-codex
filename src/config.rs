@@ -1,6 +1,14 @@
+use crate::state::AppState;
+use axum::{
+    async_trait,
+    extract::FromRequestParts,
+    http::{request::Parts, StatusCode},
+};
+
 use std::path::PathBuf;
 
 /// Stablecoin information struct
+#[derive(Clone)]
 pub struct StablecoinInfo {
     pub symbol: &'static str,
     pub mint: String,
@@ -9,6 +17,7 @@ pub struct StablecoinInfo {
 }
 
 /// Registry of all supported stablecoins
+#[derive(Clone)]
 pub struct StablecoinRegistry {
     pub usdc: StablecoinInfo,
     pub usdt: StablecoinInfo,
@@ -29,6 +38,7 @@ impl StablecoinRegistry {
 }
 
 /// Main application configuration loaded from environment variables
+#[derive(Clone)]
 pub struct Config {
     // ===== DATABASE =====
     pub database_url: String,
@@ -266,6 +276,18 @@ impl Config {
         };
 
         config
+    }
+}
+
+#[async_trait]
+impl FromRequestParts<AppState> for Config {
+    type Rejection = StatusCode;
+
+    async fn from_request_parts(
+        _parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(state.config.as_ref().clone())
     }
 }
 

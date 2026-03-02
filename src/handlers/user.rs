@@ -109,7 +109,7 @@ pub async fn update_profile(
 
     // Update user
     sqlx::query!(
-        "UPDATE user_accounts SET display_name = $1, updated_at = extract(epoch from now()) WHERE id = $2",
+        "UPDATE user_accounts SET display_name = $1 WHERE id = $2",
         body.display_name,
         auth.user_id
     )
@@ -129,18 +129,8 @@ pub async fn update_contacts(
     auth: AuthUser,
     Json(body): Json<UpdateContactsRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    // Get encryption key from config
-    let encryption_key = config.encryption_key.as_bytes();
-    if encryption_key.len() != 32 {
-        return Err(AppError::InternalError);
-    }
-    let key: [u8; 32] = encryption_key[..32].try_into().unwrap();
-
-    let index_key = config.encryption_index_key.as_bytes();
-    if index_key.len() < 32 {
-        return Err(AppError::InternalError);
-    }
-    let idx_key: [u8; 32] = index_key[..32].try_into().unwrap();
+    let key = decode_hex_key_32(&config.encryption_key)?;
+    let idx_key = decode_hex_key_32(&config.encryption_index_key)?;
 
     // Encrypt email if provided
     let (email_enc, email_nonce, email_index) = if let Some(ref email) = body.email {
@@ -169,16 +159,16 @@ pub async fn update_contacts(
 
     // UPSERT contacts
     sqlx::query!(
-        "INSERT INTO user_contacts (user_id, email_encrypted, email_nonce, email_index, phone_encrypted, phone_nonce, push_token_encrypted, push_token_nonce, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, extract(epoch from now()), extract(epoch from now()))
+        "INSERT INTO user_contacts (user_id, email_enc, email_nonce, email_index, phone_enc, phone_nonce, push_token_enc, push_token_nonce, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, extract(epoch from now()))
          ON CONFLICT (user_id)
          DO UPDATE SET
-             email_encrypted = COALESCE($2, user_contacts.email_encrypted),
+             email_enc = COALESCE($2, user_contacts.email_enc),
              email_nonce = COALESCE($3, user_contacts.email_nonce),
              email_index = COALESCE($4, user_contacts.email_index),
-             phone_encrypted = COALESCE($5, user_contacts.phone_encrypted),
+             phone_enc = COALESCE($5, user_contacts.phone_enc),
              phone_nonce = COALESCE($6, user_contacts.phone_nonce),
-             push_token_encrypted = COALESCE($7, user_contacts.push_token_encrypted),
+             push_token_enc = COALESCE($7, user_contacts.push_token_enc),
              push_token_nonce = COALESCE($8, user_contacts.push_token_nonce),
              updated_at = extract(epoch from now())",
         auth.user_id,
@@ -194,7 +184,9 @@ pub async fn update_contacts(
     .await
     .map_err(|_| AppError::InternalError)?;
 
-    Ok(Json(serde_json::json!({ "message": "Contacts updated successfully" })))
+    Ok(Json(
+        serde_json::json!({ "message": "Contacts updated successfully" }),
+    ))
 }
 
 /// DELETE /user/contacts
@@ -208,7 +200,9 @@ pub async fn delete_contacts(
         .await
         .map_err(|_| AppError::InternalError)?;
 
-    Ok(Json(serde_json::json!({ "message": "Contacts deleted successfully" })))
+    Ok(Json(
+        serde_json::json!({ "message": "Contacts deleted successfully" }),
+    ))
 }
 
 // ===== HELPERS =====
@@ -221,11 +215,21 @@ fn sanitise_display_name(name: &str) -> Result<(), AppError> {
     }
 
     // Reject HTML chars to prevent XSS
-    if name.contains('<') || name.contains('>') || name.contains('"') || name.contains('\'') || name.contains('&') {
+    if name.contains('<')
+        || name.contains('>')
+        || name.contains('"')
+        || name.contains('\'')
+        || name.contains('&')
+    {
         return Err(AppError::InvalidDisplayName);
     }
 
     Ok(())
+}
+
+fn decode_hex_key_32(key_hex: &str) -> Result<[u8; 32], AppError> {
+    let key_bytes = hex::decode(key_hex).map_err(|_| AppError::InternalError)?;
+    key_bytes.try_into().map_err(|_| AppError::InternalError)
 }
 
 #[cfg(test)]
@@ -269,13 +273,11 @@ mod tests {
         let profile = UserProfile {
             id: Uuid::new_v4(),
             display_name: Some("Test User".to_string()),
-            linked_auth_methods: vec![
-                AuthMethod {
-                    auth_type: "wallet".to_string(),
-                    provider: None,
-                    pubkey: Some("test_pubkey".to_string()),
-                },
-            ],
+            linked_auth_methods: vec![AuthMethod {
+                auth_type: "wallet".to_string(),
+                provider: None,
+                pubkey: Some("test_pubkey".to_string()),
+            }],
         };
 
         assert_eq!(profile.linked_auth_methods.len(), 1);

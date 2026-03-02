@@ -31,36 +31,46 @@ impl std::fmt::Display for ProtectedKeypair {
 pub enum WsEvent {
     /// Triggered when `create_agreement` is confirmed on-chain
     AgreementCreated {
-        agreement_id: String,
-        initiator: String,
+        agreement_pda: String,
     },
     /// Triggered when `sign_agreement` is confirmed (partial signature)
     AgreementSigned {
-        agreement_id: String,
-        signed_by: String,
-        remaining_signatures: u32,
+        agreement_pda: String,
     },
     /// Triggered when `sign_agreement` is confirmed (final signature)
-    AgreementCompleted { agreement_id: String },
-    /// Triggered when `cancel_agreement` is confirmed on-chain
-    AgreementCancelled { agreement_id: String },
-    /// Triggered when `expire_agreement` is confirmed on-chain
-    AgreementExpired { agreement_id: String },
-    /// Triggered when `vote_revoke` is confirmed (final revocation)
-    AgreementRevoked { agreement_id: String },
-    /// Triggered when payment is confirmed (Stripe webhook or SOL on-chain)
-    PaymentReceived { payment_id: String, amount: u64 },
-    /// Triggered when all party pubkeys are resolved — creator must sign
-    DraftReady { draft_id: String },
-    /// Triggered when invited party did not respond in time
-    InvitationSent {
-        draft_id: String,
-        invited_user: String,
+    AgreementCompleted {
+        agreement_pda: String,
     },
-    /// Generic notification sent event
-    NotificationSent {
-        notification_id: String,
-        user_id: String,
+    /// Triggered when `cancel_agreement` is confirmed on-chain
+    AgreementCancelled {
+        agreement_pda: String,
+    },
+    /// Triggered when `expire_agreement` is confirmed on-chain
+    AgreementExpired {
+        agreement_pda: String,
+    },
+    AgreementRevokeVote {
+        agreement_pda: String,
+    },
+    AgreementRevoked {
+        agreement_pda: String,
+    },
+    /// Triggered when all party pubkeys are resolved — creator must sign
+    DraftReady {
+        draft_id: String,
+    },
+    /// Triggered when invited party did not respond in time
+    DraftInvitationExpired {
+        draft_id: String,
+    },
+    PaymentConfirmed {
+        draft_id: String,
+    },
+    RefundCompleted {
+        draft_id: String,
+    },
+    GenericNotification {
+        message: String,
     },
 }
 
@@ -104,8 +114,7 @@ mod tests {
     #[test]
     fn test_ws_event_clone() {
         let event = WsEvent::AgreementCreated {
-            agreement_id: "test123".to_string(),
-            initiator: "user456".to_string(),
+            agreement_pda: "test123".to_string(),
         };
         let _cloned = event.clone();
     }

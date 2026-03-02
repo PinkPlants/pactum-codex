@@ -40,14 +40,14 @@ pub mod workers {
     pub mod refund_worker;
 }
 
-use axum::{routing::get, routing::post, Router};
 use config::Config;
 use dashmap::DashMap;
 use solana_client::rpc_client::RpcClient;
 use sqlx::postgres::PgPoolOptions;
-use state::{AppState, ProtectedKeypair};
+use state::{AppState, WsEvent};
 use std::sync::Arc;
 use tokio::sync::broadcast;
+use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -62,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("🚀 Pactum backend starting...");
 
     // Load configuration
-    let config = Config::from_env()?;
+    let config = Arc::new(Config::from_env());
     tracing::info!("✓ Configuration loaded");
 
     // Connect to PostgreSQL
@@ -74,65 +74,72 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("✓ PostgreSQL connected");
 
     // Run migrations
-    sqlx::migrate!("./migrations")
-        .run(&db)
-        .await
-        .expect("Failed to run migrations");
+    sqlx::migrate!("./migrations").run(&db).await?;
     tracing::info!("✓ Migrations applied");
 
     // Load keypairs
-    let vault_keypair = services::keypair_security::load_keypair(
-        config.platform_vault_keypair_path.to_str().expect("Invalid vault keypair path")
-    ).expect("Failed to load vault keypair");
+    let vault_keypair_path = config.platform_vault_keypair_path.to_str().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid vault keypair path",
+        )
+    })?;
+    let vault_keypair = Arc::new(
+        services::keypair_security::load_keypair(vault_keypair_path)
+            .expect("Failed to load vault keypair"),
+    );
     tracing::info!("✓ Vault keypair loaded");
 
-    let treasury_keypair = services::keypair_security::load_keypair(
-        config.platform_treasury_keypair_path.to_str().expect("Invalid treasury keypair path")
-    ).expect("Failed to load treasury keypair");
+    let treasury_keypair_path =
+        config
+            .platform_treasury_keypair_path
+            .to_str()
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid treasury keypair path",
+                )
+            })?;
+    let treasury_keypair = Arc::new(
+        services::keypair_security::load_keypair(treasury_keypair_path)
+            .expect("Failed to load treasury keypair"),
+    );
     tracing::info!("✓ Treasury keypair loaded");
 
     // Create Solana RPC client
-    let rpc_client = Arc::new(RpcClient::new(config.solana_rpc_url.clone()));
+    let solana = Arc::new(RpcClient::new(config.solana_rpc_url.clone()));
     tracing::info!("✓ Solana RPC client initialized");
 
-    // Create WebSocket broadcast channels
-    let (ws_tx, _) = broadcast::channel(1000);
-    let ws_connections = Arc::new(DashMap::new());
+    let server_addr = format!("{}:{}", config.server_host, config.server_port);
+    let ws_channels: Arc<DashMap<Uuid, broadcast::Sender<WsEvent>>> = Arc::new(DashMap::new());
 
     // Build AppState
     let state = AppState {
-        db: db.clone(),
-        config: config.clone(),
-        rpc_client: rpc_client.clone(),
+        db,
+        config: Arc::clone(&config),
+        solana,
         vault_keypair,
         treasury_keypair,
-        ws_tx,
-        ws_connections,
+        ws_channels,
     };
 
     // Validate keypair pubkeys
     services::keypair_security::validate_keypair_pubkeys(&state);
     tracing::info!("✓ Keypair pubkeys validated");
 
-    // Build router with auth routes
-    let app = Router::new()
-        // Auth routes
-        .route("/auth/challenge", get(handlers::auth::challenge))
-        .route("/auth/verify", post(handlers::auth::verify))
-        .route("/auth/refresh", post(handlers::auth::refresh))
-        .route("/auth/logout", post(handlers::auth::logout))
-        // Health check
-        .route("/health", get(|| async { "OK" }))
-        // Attach state
-        .with_state(db)
-        .with_state(config.clone());
+    // Spawn background workers
+    tokio::spawn(workers::event_listener::run(state.clone()));
+    tokio::spawn(workers::keeper::run(state.clone()));
+    tokio::spawn(workers::notification_worker::run(state.clone()));
+    tokio::spawn(workers::refund_worker::run(state.clone()));
+    tracing::info!("✓ Background workers spawned");
+
+    // Build router (all routes wired inside router::build_router)
+    let app = router::build_router(state);
 
     // Start server
-    let addr = format!("{}:{}", config.server_host, config.server_port);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    
-    tracing::info!("🎉 Pactum backend listening on {}", addr);
-    
+    let listener = tokio::net::TcpListener::bind(&server_addr).await?;
+    tracing::info!("🎉 Pactum backend listening on {}", server_addr);
     axum::serve(listener, app).await?;
 
     Ok(())

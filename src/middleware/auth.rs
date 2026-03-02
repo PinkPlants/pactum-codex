@@ -37,14 +37,12 @@ where
             })?;
 
         // Extract Bearer token
-        let token = auth_header
-            .strip_prefix("Bearer ")
-            .ok_or_else(|| {
-                (
-                    StatusCode::UNAUTHORIZED,
-                    "Invalid Authorization header format".to_string(),
-                )
-            })?;
+        let token = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                "Invalid Authorization header format".to_string(),
+            )
+        })?;
 
         // Get config from state
         let config = Config::from_request_parts(parts, state)
@@ -58,7 +56,10 @@ where
 
         // Decode and validate JWT
         let claims = decode_access_token(token, &config).map_err(|_| {
-            (StatusCode::UNAUTHORIZED, "Invalid or expired token".to_string())
+            (
+                StatusCode::UNAUTHORIZED,
+                "Invalid or expired token".to_string(),
+            )
         })?;
 
         Ok(AuthUser {
@@ -146,8 +147,8 @@ mod tests {
         let pubkey = Some("test_pubkey".to_string());
 
         // Issue a valid token
-        let token = issue_access_token(user_id, pubkey.clone(), &config)
-            .expect("Failed to issue token");
+        let token =
+            issue_access_token(user_id, pubkey.clone(), &config).expect("Failed to issue token");
 
         // Create request parts with Authorization header
         let mut headers = HeaderMap::new();
@@ -156,10 +157,8 @@ mod tests {
             format!("Bearer {}", token).parse().unwrap(),
         );
 
-        let request = Request::builder()
-            .body(())
-            .unwrap();
-        
+        let request = Request::builder().body(()).unwrap();
+
         let (mut parts, _) = request.into_parts();
         parts.headers = headers;
 

@@ -32,6 +32,9 @@ pub enum AppError {
         add_email_url: String,
     },
 
+    #[error("Wallet already linked")]
+    WalletAlreadyLinked,
+
     // File Upload Errors (400/422)
     #[error("Missing content type header")]
     MissingContentType,
@@ -103,6 +106,15 @@ pub enum AppError {
 
     #[error("Rate limited")]
     RateLimited,
+
+    #[error("Not implemented")]
+    NotImplemented,
+
+    #[error("Solana RPC error")]
+    SolanaRpcError,
+
+    #[error("Transaction signing failed")]
+    TransactionSigningFailed,
 }
 
 impl IntoResponse for AppError {
@@ -148,6 +160,12 @@ impl IntoResponse for AppError {
                 StatusCode::CONFLICT,
                 "Email already registered",
                 json!({ "error": "email_already_registered" }),
+            ),
+
+            AppError::WalletAlreadyLinked => (
+                StatusCode::CONFLICT,
+                "Wallet already linked",
+                json!({ "error": "wallet_already_linked" }),
             ),
 
             // 422 Unprocessable Entity
@@ -206,7 +224,7 @@ impl IntoResponse for AppError {
                 json!({ "error": "invalid_hash" }),
             ),
             AppError::HashMismatch => (
-                StatusCode::UNPROCESSABLE_ENTITY,
+                StatusCode::BAD_REQUEST,
                 "Hash mismatch",
                 json!({ "error": "hash_mismatch" }),
             ),
@@ -273,6 +291,24 @@ impl IntoResponse for AppError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Internal server error",
                 json!({ "error": "internal_error" }),
+            ),
+
+            // 501 Not Implemented
+            AppError::SolanaRpcError => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Solana RPC error",
+                json!({ "error": "solana_rpc_error" }),
+            ),
+            AppError::TransactionSigningFailed => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Transaction signing failed",
+                json!({ "error": "transaction_signing_failed" }),
+            ),
+
+            AppError::NotImplemented => (
+                StatusCode::NOT_IMPLEMENTED,
+                "Not implemented",
+                json!({ "error": "not_implemented" }),
             ),
         };
 
@@ -408,10 +444,10 @@ mod tests {
     }
 
     #[test]
-    fn test_hash_mismatch_returns_422() {
+    fn test_hash_mismatch_returns_400() {
         let err = AppError::HashMismatch;
         let response = err.into_response();
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]

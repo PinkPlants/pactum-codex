@@ -10,11 +10,11 @@ use uuid::Uuid;
 /// JWT Claims struct matching spec §7.4
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
-    pub sub: Uuid,                // user_id
-    pub pubkey: Option<String>,   // wallet address if available
-    pub exp: usize,               // expiration timestamp in SECONDS (not milliseconds)
-    pub iat: usize,               // issued-at timestamp in SECONDS
-    pub jti: Uuid,                // JWT ID for tracking/revocation
+    pub sub: Uuid,              // user_id
+    pub pubkey: Option<String>, // wallet address if available
+    pub exp: usize,             // expiration timestamp in SECONDS (not milliseconds)
+    pub iat: usize,             // issued-at timestamp in SECONDS
+    pub jti: Uuid,              // JWT ID for tracking/revocation
 }
 
 /// Compute SHA-256 hash of a string and return hex-encoded result
@@ -51,8 +51,7 @@ pub fn issue_access_token(
     };
 
     let encoding_key = EncodingKey::from_secret(config.jwt_secret.as_bytes());
-    encode(&Header::default(), &claims, &encoding_key)
-        .map_err(|_| AppError::InternalError)
+    encode(&Header::default(), &claims, &encoding_key).map_err(|_| AppError::InternalError)
 }
 
 /// Decode and validate an access token
@@ -67,10 +66,7 @@ pub fn decode_access_token(token: &str, config: &Config) -> Result<Claims, AppEr
 
 /// Issue and store a refresh token (long-lived, 7 days)
 /// Returns the raw token (plaintext); hash is stored in database
-pub async fn issue_and_store_refresh_token(
-    db: &PgPool,
-    user_id: Uuid,
-) -> Result<String, AppError> {
+pub async fn issue_and_store_refresh_token(db: &PgPool, user_id: Uuid) -> Result<String, AppError> {
     // Generate random refresh token (32 bytes = 256 bits)
     let token_bytes: [u8; 32] = rand::random();
     let raw_token = hex::encode(token_bytes);
@@ -203,7 +199,10 @@ mod tests {
         assert_eq!(claims.sub, user_id);
         assert_eq!(claims.pubkey, pubkey);
         assert!(claims.exp > claims.iat);
-        assert_eq!(claims.exp - claims.iat, config.jwt_access_expiry_seconds as usize);
+        assert_eq!(
+            claims.exp - claims.iat,
+            config.jwt_access_expiry_seconds as usize
+        );
     }
 
     #[test]
@@ -211,8 +210,8 @@ mod tests {
         let config = create_test_config();
         let user_id = Uuid::new_v4();
 
-        let token = issue_access_token(user_id, None, &config)
-            .expect("Failed to issue access token");
+        let token =
+            issue_access_token(user_id, None, &config).expect("Failed to issue access token");
 
         let claims = decode_access_token(&token, &config).expect("Failed to decode");
         assert_eq!(claims.sub, user_id);
@@ -250,8 +249,8 @@ mod tests {
         let user_id = Uuid::new_v4();
 
         // Issue token with correct secret
-        let token = issue_access_token(user_id, None, &config)
-            .expect("Failed to issue access token");
+        let token =
+            issue_access_token(user_id, None, &config).expect("Failed to issue access token");
 
         // Create config with wrong secret
         let mut wrong_config = create_test_config();
@@ -267,10 +266,10 @@ mod tests {
         let config = create_test_config();
         let user_id = Uuid::new_v4();
 
-        let token1 = issue_access_token(user_id, None, &config)
-            .expect("Failed to issue access token");
-        let token2 = issue_access_token(user_id, None, &config)
-            .expect("Failed to issue access token");
+        let token1 =
+            issue_access_token(user_id, None, &config).expect("Failed to issue access token");
+        let token2 =
+            issue_access_token(user_id, None, &config).expect("Failed to issue access token");
 
         let claims1 = decode_access_token(&token1, &config).expect("Failed to decode");
         let claims2 = decode_access_token(&token2, &config).expect("Failed to decode");
@@ -283,7 +282,10 @@ mod tests {
     fn test_sha256_hex_known_values() {
         // Test with known SHA-256 hashes
         let test_cases = vec![
-            ("", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
+            (
+                "",
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            ),
             (
                 "test",
                 "9f86d081884c7d6d9ffd60814e0406352b5914985847328e1640fc69ec282ca34",
@@ -306,8 +308,8 @@ mod tests {
         config.jwt_access_expiry_seconds = 1800; // 30 minutes
 
         let user_id = Uuid::new_v4();
-        let token = issue_access_token(user_id, None, &config)
-            .expect("Failed to issue access token");
+        let token =
+            issue_access_token(user_id, None, &config).expect("Failed to issue access token");
 
         let claims = decode_access_token(&token, &config).expect("Failed to decode");
         assert_eq!(claims.exp - claims.iat, 1800);

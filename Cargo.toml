@@ -65,6 +65,7 @@ resend-rs = "0.8"
 thiserror = "2"
 borsh = { version = "1", features = ["derive"] }
 ed25519-dalek = { version = "2.1", features = ["serde"] }
+bincode = "1"
 
 [profile.release]
 opt-level = 3

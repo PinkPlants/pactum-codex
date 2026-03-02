@@ -166,10 +166,16 @@ pub fn build_ws_event(job: &NotificationJob) -> WsEvent {
         "Expired" => WsEvent::AgreementExpired {
             agreement_pda: job.agreement_pda.clone().unwrap_or_default(),
         },
+        "RevokeVote" => WsEvent::AgreementRevokeVote {
+            agreement_pda: job.agreement_pda.clone().unwrap_or_default(),
+        },
         "Revoked" => WsEvent::AgreementRevoked {
             agreement_pda: job.agreement_pda.clone().unwrap_or_default(),
         },
         "DraftReadyToSubmit" => WsEvent::DraftReady {
+            draft_id: job.agreement_pda.clone().unwrap_or_default(),
+        },
+        "InvitationExpired" => WsEvent::DraftInvitationExpired {
             draft_id: job.agreement_pda.clone().unwrap_or_default(),
         },
         "PaymentConfirmed" => WsEvent::PaymentConfirmed {
@@ -231,9 +237,15 @@ mod tests {
 
     #[test]
     fn test_notification_event_as_str() {
-        assert_eq!(NotificationEvent::AgreementCreated.as_str(), "AgreementCreated");
+        assert_eq!(
+            NotificationEvent::AgreementCreated.as_str(),
+            "AgreementCreated"
+        );
         assert_eq!(NotificationEvent::Completed.as_str(), "Completed");
-        assert_eq!(NotificationEvent::RefundCompleted.as_str(), "RefundCompleted");
+        assert_eq!(
+            NotificationEvent::RefundCompleted.as_str(),
+            "RefundCompleted"
+        );
     }
 
     #[test]
@@ -289,6 +301,50 @@ mod tests {
                 assert!(message.contains("UnknownEvent"));
             }
             _ => panic!("Expected GenericNotification event"),
+        }
+    }
+
+    #[test]
+    fn test_build_ws_event_revoke_vote() {
+        let job = NotificationJob {
+            id: Uuid::new_v4(),
+            event_type: "RevokeVote".to_string(),
+            agreement_pda: Some("vote_pda".to_string()),
+            recipient_pubkey: "test_pubkey".to_string(),
+            scheduled_at: 0,
+            status: "pending".to_string(),
+            attempts: 0,
+        };
+
+        let event = build_ws_event(&job);
+
+        match event {
+            WsEvent::AgreementRevokeVote { agreement_pda } => {
+                assert_eq!(agreement_pda, "vote_pda");
+            }
+            _ => panic!("Expected AgreementRevokeVote event"),
+        }
+    }
+
+    #[test]
+    fn test_build_ws_event_invitation_expired() {
+        let job = NotificationJob {
+            id: Uuid::new_v4(),
+            event_type: "InvitationExpired".to_string(),
+            agreement_pda: Some("draft_123".to_string()),
+            recipient_pubkey: "test_pubkey".to_string(),
+            scheduled_at: 0,
+            status: "pending".to_string(),
+            attempts: 0,
+        };
+
+        let event = build_ws_event(&job);
+
+        match event {
+            WsEvent::DraftInvitationExpired { draft_id } => {
+                assert_eq!(draft_id, "draft_123");
+            }
+            _ => panic!("Expected DraftInvitationExpired event"),
         }
     }
 }

@@ -1,6 +1,6 @@
 # Pactum Protocol — Backend Specification
 
-> **Version:** 0.1.0  
+> **Version:** 0.12.0 — Draft  
 > **Security audit:** 2026-02-25 — all H and M findings addressed  
 > **Runtime:** Rust (Tokio)  
 > **Framework:** Axum 0.8.x  
@@ -35,14 +35,14 @@ The Pactum backend is an Axum-based HTTP + WebSocket server. It acts as a **UX c
 
 **Responsibilities:**
 - Document upload + dual-layer SHA-256 hash verification (§10.1 of on-chain spec)
-- Solana transaction construction and serialization (returned unsigned to client)
+- Solana transaction construction and partial signing — vault_keypair co-signs every transaction as fee payer and `vault_funder`; client adds the user wallet signature before submission
 - PostgreSQL indexing of agreement parties for efficient queries
 - Real-time event pipeline via Solana `logsSubscribe` WebSocket
 - Email notifications via Resend
 - JWT authentication (SIWS wallet-native + OAuth2 Google / Microsoft)
 - Party invitation by email — resolves email to pubkey or sends signup invite
-- Per-agreement fee collection — Stripe (fiat) and SOL (Solana Pay) accepted; payment enforced before transaction is built; on-chain program unchanged
-- Keeper job for `expire_agreement` transactions and stale invitation cleanup
+- Per-agreement fee collection — USDC, USDT, PYUSD (stablecoins via Solana Pay); payment enforced before transaction is built; on-chain program has no knowledge of payment
+- Scheduled expiry worker: submits `expire_agreement` transactions for agreements past their signing deadline, fired once per agreement at exactly `expires_at` (not a polling loop)
 
 **What the backend never does:**
 - Sign transactions on behalf of users
@@ -130,7 +130,8 @@ pactum-backend/
     │   └── metadata.rs         -- NFT metadata JSON generation
     └── workers/
         ├── event_listener.rs      -- Solana logsSubscribe WebSocket; triggers refund_if_eligible on cancel/expire
-        ├── keeper.rs              -- expire_agreement keeper job + treasury sweep + balance alerts
+        ├── keeper.rs              -- treasury sweep + balance alerts + invitation cleanup
+        ├── expiry_worker.rs       -- submits expire_agreement txs; polls PostgreSQL every 5 min
         ├── refund_worker.rs       -- polls refund_pending payments; executes SPL token refund transfers
         └── notification_worker.rs -- polls notification_queue
 ```
@@ -180,7 +181,7 @@ PLATFORM_NONREFUNDABLE_FEE_CENTS=10              # $0.10 kept on cancel/expire a
 # Platform keypairs — TWO separate hot wallets with distinct roles and blast radii
 # See §11.5 for security model, secret loading procedure, and rotation runbook.
 
-# Vault keypair — funds MintVault + pays gas for create_agreement / expire_agreement
+# Vault keypair — pays gas for create_agreement / expire_agreement / sign_agreement
 # Holds SOL only. No stablecoin ATAs owned by this key.
 # Target float: 1–2 SOL (≈ 200–400 agreements). Top up daily from cold wallet.
 PLATFORM_VAULT_PUBKEY=<vault_pubkey>             # stored separately for startup validation
@@ -195,7 +196,7 @@ PLATFORM_TREASURY_KEYPAIR_PATH=/run/secrets/treasury_keypair.json
 # Hot wallet safety thresholds
 VAULT_MIN_SOL_ALERT=0.5                          # alert ops when vault SOL drops below this
 VAULT_MIN_SOL_CIRCUIT_BREAKER=0.1               # halt server if vault drops below this
-VAULT_FUNDING_RATE_LIMIT_PER_HOUR=50            # circuit breaker: max vault fundings per hour
+VAULT_FUNDING_RATE_LIMIT_PER_HOUR=50            # circuit breaker: max create_agreement fundings per hour
 TREASURY_MIN_USDC_ALERT=20_000_000              # alert when USDC ATA < $20 (6 decimals)
 TREASURY_FLOAT_PER_TOKEN=50_000_000             # keep $50 per token in hot wallet; sweep rest
 TREASURY_SWEEP_DEST=<cold_wallet_pubkey>         # cold wallet or Squads multisig address
@@ -250,7 +251,7 @@ pub struct AppState {
     pub db:               PgPool,
     pub config:           Arc<Config>,
     pub solana:           Arc<RpcClient>,
-    /// vault_keypair: funds MintVault + pays gas for create_agreement / expire_agreement.
+    /// vault_keypair: pays gas for create_agreement / expire_agreement / sign_agreement.
     /// Holds SOL only. Low float (~1–2 SOL). Blast radius: vault float only.
     pub vault_keypair:    Arc<ProtectedKeypair>,
     /// treasury_keypair: owns stablecoin ATAs; signs refund SPL transfers only.
@@ -363,7 +364,7 @@ CREATE INDEX idx_notification_queue_pending
 
 ### 5.5 Agreement Drafts
 
-Holds pre-chain agreement state while waiting for unregistered party pubkeys to resolve. A draft is created when at least one invited party email cannot be resolved to a known wallet. Once all pubkeys are resolved, the backend notifies the creator to sign and submit `create_agreement`. If the creator never returns, the draft can be discarded with no on-chain cleanup needed — no vault funds have been locked yet.
+Holds pre-chain agreement state while waiting for unregistered party pubkeys to resolve. A draft is created when at least one invited party email cannot be resolved to a known wallet. Once all pubkeys are resolved, the backend notifies the creator to sign and submit `create_agreement`. If the creator never returns, the draft can be discarded with no on-chain cleanup needed — no on-chain state has been created yet.
 
 ```sql
 CREATE TABLE agreement_drafts (
@@ -465,7 +466,7 @@ Rate limit on `GET /invite/{token}`: **5 req/min per IP** (stricter than the def
 
 ### 5.7 Payments
 
-One row per agreement payment. Supports both Stripe (fiat) and Solana Pay (SOL). Payment must be confirmed before `POST /draft/{id}/submit` is accepted.
+One row per agreement payment. Supports stablecoin payments via Solana Pay (USDC, USDT, PYUSD). Payment must be confirmed before `POST /draft/{id}/submit` is accepted.
 
 ```sql
 CREATE TABLE agreement_payments (
@@ -914,8 +915,6 @@ async fn upload_handler(/* ... */, mut multipart: Multipart) -> impl IntoRespons
 | `POST` | `/agreement/{pda}/cancel` | JWT + wallet | Build `cancel_agreement` transaction |
 | `POST` | `/agreement/{pda}/revoke` | JWT + wallet | Build `vote_revoke` transaction |
 | `POST` | `/agreement/{pda}/retract` | JWT + wallet | Build `retract_revoke_vote` transaction |
-| `POST` | `/agreement/{pda}/expire` | — | Build `expire_agreement` transaction (public) |
-| `DELETE` | `/agreement/{pda}` | JWT + wallet | Build `close_agreement` transaction |
 
 ### 8.4 Agreement Drafts (Pre-Chain)
 
@@ -1177,7 +1176,6 @@ Per-agreement fee is enforced entirely at the backend API layer. The on-chain pr
 
 > **SOL payment removed.** Stablecoins are strictly better for fixed-price payments — no price oracle, no rate lock, no tolerance math, no volatility exposure. SOL remains the gas token for Solana transactions but is not used as a payment method.
 
-> **Gas fees for signing parties (v0.1):** Each party needs a small amount of SOL in their wallet (~0.000005 SOL, ~$0.001) to submit their `sign_agreement` transaction. This is a Solana network requirement unrelated to the platform fee. Parties are notified of this requirement during onboarding. Gasless signing via platform fee sponsorship is planned for v0.2.
 
 ### 9.1 Routes
 
@@ -1410,8 +1408,9 @@ async fn submit_draft(/* ... */) -> impl IntoResponse {
     ).execute(&state.db).await?;
 
     // Build and return partially-signed create_agreement transaction
+    // vault_keypair co-signs as fee payer and vault_funder
     let tx = build_create_agreement_tx(
-        &state.solana, &draft, &storage_uri, &auth.pubkey, &state.vault_keypair
+        &state.solana, &state.vault_keypair, &draft, &storage_uri, &auth.pubkey
     ).await?;
     Ok(Json(json!({ "transaction": tx, "agreement_pda": draft.pda })))
 }
@@ -1751,32 +1750,52 @@ pub fn hmac_index(value: &str, key: &[u8; 32]) -> Vec<u8> {
 
 ### 11.3 Transaction Construction (`src/services/solana.rs`)
 
-The backend builds all transactions and returns them **partially signed** (vault keypair pre-signs as fee payer and vault funder) or **unsigned** to the client. Every transaction is validated before the platform keypair signs it — the backend never blindly signs a transaction.
+The backend builds all transactions, **partially signs** them with `vault_keypair` as both fee payer and `vault_funder` co-signer, and returns them to the client. The client adds the required user wallet signature(s) and submits to the RPC. The backend never blindly signs — every transaction is validated before the platform keypair signs it.
+
+**Account requirements by instruction:**
+
+| Instruction | Platform signs as | User signs as | Additional signers |
+|---|---|---|---|
+| `create_agreement` | `vault_funder` + fee payer | `creator` | — |
+| `sign_agreement` (partial) | `vault_funder` + fee payer | `signer` (party) | — |
+| `sign_agreement` (final) | `vault_funder` + fee payer | `signer` (party) | `nft_asset` keypair (fresh) |
+| `cancel_agreement` | `vault_funder` + fee payer | `creator` | — |
+| `expire_agreement` | `vault_funder` + fee payer | — (platform only) | — |
+| `vote_revoke` | `vault_funder` + fee payer | `voter` (party) | — |
+| `retract_revoke_vote` | `vault_funder` + fee payer | `voter` (party) | — |
+
+> **`sign_agreement` (final):** The backend must generate a fresh `nft_asset` keypair client-side and include it as a signer. MPL-Core's `CreateV2` requires the new asset account to sign the transaction, proving the address is unoccupied. The keypair is used once and then discarded — it has no ongoing significance. The `collection` account (derived from `agreement.collection`) must also be provided as an `UncheckedAccount`.
 
 ```rust
 pub async fn build_create_agreement_tx(
-    rpc:           &RpcClient,
-    args:          &CreateAgreementArgs,
-    creator:       &Pubkey,
-    vault_keypair: &ProtectedKeypair,
-    config:        &Config,
+    rpc:            &RpcClient,
+    vault_keypair:  &ProtectedKeypair,
+    draft:          &AgreementDraft,
+    storage_uri:    &str,
+    creator:        &Pubkey,
 ) -> Result<String, AppError> {
-    // 1. Derive agreement PDA and mint_vault PDA
-    // 2. Calculate vault_deposit = getMinimumBalanceForRentExemption(asset_size) + VAULT_BUFFER
-    // 3. Build instructions
-    let vault_transfer_ix = system_instruction::transfer(
+    // 1. Derive agreement PDA from creator + agreement_id
+    let (agreement_pda, _) = derive_agreement_pda(creator, &draft.agreement_id);
+
+    // 2. Look up creator's CollectionState PDA — required account on create_agreement
+    let (collection_state_pda, _) = derive_collection_state_pda(creator);
+
+    // 3. Build create_agreement instruction
+    let create_ix = build_create_agreement_instruction(
+        &agreement_pda,
+        &collection_state_pda,
         &vault_keypair.0.pubkey(),
-        &mint_vault_pda,
-        vault_deposit,
+        creator,
+        draft,
+        storage_uri,
     );
-    let create_ix = build_create_agreement_instruction(args, creator);
 
     // 4. Validate before signing — never blindly sign
-    validate_create_agreement_tx(&vault_transfer_ix, vault_deposit, config)?;
+    validate_create_agreement_args(draft)?;
 
-    // 5. Assemble with vault_keypair as fee payer
+    // 5. Assemble with vault_keypair as fee payer; vault_keypair also signs as vault_funder
     let mut tx = Transaction::new_with_payer(
-        &[vault_transfer_ix, create_ix],
+        &[create_ix],
         Some(&vault_keypair.0.pubkey()),
     );
 
@@ -1787,22 +1806,17 @@ pub async fn build_create_agreement_tx(
     Ok(base64::encode(bincode::serialize(&tx)?))
 }
 
-/// Validate a create_agreement transaction before the platform signs it.
-/// Prevents a crafted request from draining more SOL than expected.
-fn validate_create_agreement_tx(
-    vault_transfer_ix: &Instruction,
-    vault_deposit:     u64,
-    config:            &Config,
-) -> Result<(), AppError> {
-    // Vault deposit must not exceed configured maximum
-    // Protects against a bug or attack inflating vault_deposit
+/// Validate create_agreement args before the platform signs.
+fn validate_create_agreement_args(draft: &AgreementDraft) -> Result<(), AppError> {
+    require!(draft.parties.contains(&draft.creator), AppError::CreatorNotInParties);
     require!(
-        vault_deposit <= config.max_vault_deposit_lamports,
-        AppError::VaultDepositExceedsMaximum
+        draft.parties.len() == draft.parties.iter().collect::<std::collections::HashSet<_>>().len(),
+        AppError::DuplicateParty
     );
-
-    // Instruction count must be exactly 2 (transfer + create_agreement)
-    // Any deviation suggests a tampered transaction structure
+    require!(
+        draft.expires_in_secs >= 1 && draft.expires_in_secs as i64 <= MAX_EXPIRY_SECONDS,
+        AppError::ExpiryOutOfRange
+    );
     Ok(())
 }
 ```
@@ -1828,8 +1842,7 @@ pub async fn execute_refund(
     );
 
     // Derive expected treasury ATA from config registry and verify it matches
-    // stored source ATA — comparing ATA address to ATA address (H-5 fix:
-    // previous code incorrectly compared token_mint to ATA address)
+    // stored source ATA (H-5 fix)
     let expected_source_ata = get_treasury_ata(&payment.token_mint, config)?;
     require!(
         payment.token_source_ata == expected_source_ata.to_string(),
@@ -1858,7 +1871,15 @@ pub async fn execute_refund(
 
 ### 11.4 Metadata Generation (`src/services/metadata.rs`)
 
-Called immediately before building the final `sign_agreement` transaction:
+The backend generates the credential NFT metadata immediately before building the **final** `sign_agreement` transaction — only at that point is the full signed party list known. The flow is:
+
+1. Generate metadata JSON for the agreement
+2. Upload to Arweave/IPFS → receive permanent `metadata_uri`
+3. Generate a fresh `nft_asset` keypair (required by MPL-Core `CreateV2` as a signer)
+4. Build the `sign_agreement` transaction with `metadata_uri` in `SignAgreementArgs` and `nft_asset` keypair as an additional signer
+5. Platform partially signs with `vault_keypair`; client adds the party signer signature and the `nft_asset` keypair signature
+
+> **`nft_asset` keypair:** The on-chain program requires `nft_asset` to be a `Signer` on the final `sign_agreement` transaction. This proves the address is unoccupied (`lamports() == 0`) before MPL-Core allocates the account. The keypair is generated fresh per agreement, used once for this transaction, and then discarded — it has no ongoing significance.
 
 ```rust
 pub fn build_metadata_json(agreement: &AgreementState) -> serde_json::Value {
@@ -1872,9 +1893,42 @@ pub fn build_metadata_json(agreement: &AgreementState) -> serde_json::Value {
         "attributes": build_attributes(agreement)
     })
 }
-```
 
-After generating, upload to IPFS/Arweave → pass `metadata_uri` into the transaction.
+/// Build the final sign_agreement transaction.
+/// Called only when the invoking party is the last unsigned party.
+pub async fn build_final_sign_agreement_tx(
+    rpc:           &RpcClient,
+    vault_keypair: &ProtectedKeypair,
+    agreement:     &AgreementState,
+    metadata_uri:  &str,
+    signer:        &Pubkey,
+) -> Result<(String, Keypair), AppError> {
+    // Generate a fresh nft_asset keypair — used once, discarded after tx confirms
+    let nft_asset_keypair = Keypair::new();
+
+    let sign_ix = build_sign_agreement_instruction(
+        &agreement.pda,
+        &vault_keypair.0.pubkey(),
+        signer,
+        Some(&nft_asset_keypair.pubkey()),  // nft_asset (final signature only)
+        Some(&agreement.collection),        // collection (final signature only)
+        Some(metadata_uri.to_string()),
+    );
+
+    let mut tx = Transaction::new_with_payer(
+        &[sign_ix],
+        Some(&vault_keypair.0.pubkey()),
+    );
+
+    let blockhash = rpc.get_latest_blockhash().await?;
+    // vault_keypair and nft_asset_keypair both sign here;
+    // the party signer (signer) adds their signature client-side
+    tx.partial_sign(&[&vault_keypair.0, &nft_asset_keypair], blockhash);
+
+    // Return both the serialized tx and the nft_asset pubkey for reference
+    Ok((base64::encode(bincode::serialize(&tx)?), nft_asset_keypair))
+}
+```
 
 ### 11.5 Platform Keypair Security (`src/services/keypair_security.rs`)
 
@@ -1945,7 +1999,7 @@ pub fn validate_keypair_pubkeys(state: &AppState) {
 **Key rotation procedure:**
 
 1. Generate new keypair: `solana-keygen new -o new_vault_keypair.json`
-2. Fund new keypair with SOL float from cold wallet
+2. Fund new keypair with SOL gas float from cold wallet
 3. Update `PLATFORM_VAULT_KEYPAIR_PATH` and `PLATFORM_VAULT_PUBKEY` in secrets manager
 4. Restart server — startup validation confirms new key loaded
 5. Drain old keypair balance back to cold wallet
@@ -1996,7 +2050,7 @@ async fn handle_confirmed_tx(log: &ProgramLog, state: &AppState) {
 
 ### 12.2 Keeper Job (`src/workers/keeper.rs`)
 
-Runs every 60 seconds. Handles five independent scans:
+Runs every 60 seconds. Handles invitation lifecycle, hot wallet health, treasury sweep, payment reconciliation, and auth record cleanup. Agreement expiry is **not** handled here — see §12.3.
 
 ```rust
 pub async fn run(state: AppState) {
@@ -2004,75 +2058,40 @@ pub async fn run(state: AppState) {
     loop {
         interval.tick().await;
 
-        // Scan 1: expire on-chain agreements past their signing deadline
-        expire_stale_agreements(&state).await;
-
-        // Scan 2: send reminder emails for pending invitations
+        // Scan 1: send reminder emails for pending invitations
         send_invitation_reminders(&state).await;
 
-        // Scan 3: expire stale invitations and notify creators
+        // Scan 2: expire stale invitations and notify creators
         expire_stale_invitations(&state).await;
 
-        // Scan 4: check hot wallet balances — alert or circuit-break if low
+        // Scan 3: check hot wallet balances — alert or circuit-break if low
         check_hot_wallet_balances(&state).await;
 
-        // Scan 5: sweep excess treasury stablecoins to cold wallet (runs daily)
+        // Scan 4: sweep excess treasury stablecoins to cold wallet (runs daily)
         sweep_treasury_excess(&state).await;
 
-        // Scan 6: expire timed-out pending payments (M-4)
+        // Scan 5: expire timed-out pending payments (M-4)
         expire_timed_out_payments(&state).await;
 
-        // Scan 7: reconcile — catch any payments confirmed on-chain after polling window (M-4)
+        // Scan 6: reconcile — catch any payments confirmed on-chain after polling window (M-4)
         reconcile_late_payments(&state).await;
 
-        // Scan 8: clean up expired siws_nonces and refresh_tokens (H-2, H-3)
+        // Scan 7: clean up expired siws_nonces and refresh_tokens (H-2, H-3)
         cleanup_expired_auth_records(&state).await;
-    }
-}
-
-async fn expire_stale_agreements(state: &AppState) {
-    // Atomic status transition to 'expiring' before submitting the tx.
-    // Only the instance that successfully updates the row will submit —
-    // prevents duplicate expire_agreement transactions from multiple instances
-    // or consecutive keeper cycles (M-3 idempotency fix).
-    let locked = sqlx::query!(
-        "UPDATE agreement_parties
-         SET status = 'expiring'
-         WHERE status = 'PendingSignatures'
-           AND expires_at < extract(epoch from now())
-         RETURNING agreement_pda, creator_pubkey"
-    )
-    .fetch_all(&state.db).await.unwrap_or_default();
-
-    for row in locked {
-        match build_expire_tx(&state.solana, &row, &state.vault_keypair).await {
-            Ok(tx) => { submit_tx(&state.solana, tx).await.ok(); }
-            Err(e) => {
-                // Revert to PendingSignatures so the next cycle retries
-                tracing::error!("Failed to build expire tx for {}: {e}", row.agreement_pda);
-                sqlx::query!(
-                    "UPDATE agreement_parties SET status = 'PendingSignatures'
-                     WHERE agreement_pda = $1 AND status = 'expiring'",
-                    row.agreement_pda
-                ).execute(&state.db).await.ok();
-            }
-        }
     }
 }
 
 /// Check vault SOL and treasury stablecoin balances.
 /// Sends ops alert if below warning threshold.
-/// Hard-stops the server if vault SOL falls below circuit breaker threshold —
-/// prevents further vault fundings that would fail on-chain anyway.
+/// Hard-stops the server if vault SOL falls below circuit breaker threshold.
 async fn check_hot_wallet_balances(state: &AppState) {
-    // Check vault SOL
     let vault_sol = state.solana
         .get_balance(&state.vault_keypair.0.pubkey()).await
         .unwrap_or(0);
 
     if vault_sol < lamports_from_sol(state.config.vault_min_sol_circuit_breaker) {
         tracing::error!(
-            "CIRCUIT BREAKER: vault SOL {} below minimum {} — halting to prevent failed txs",
+            "CIRCUIT BREAKER: vault SOL {} below minimum {} — halting",
             vault_sol, state.config.vault_min_sol_circuit_breaker
         );
         send_ops_alert(&state, "CRITICAL: vault SOL circuit breaker triggered").await;
@@ -2096,7 +2115,6 @@ async fn check_hot_wallet_balances(state: &AppState) {
 
 /// Sweep stablecoin balances above the float threshold to cold wallet.
 /// Runs once per day (tracked via last_sweep_at in a config table).
-/// Keeps only TREASURY_FLOAT_PER_TOKEN in the hot wallet, minimising exposure.
 async fn sweep_treasury_excess(state: &AppState) {
     if !should_sweep_today(&state.db).await { return; }
 
@@ -2122,33 +2140,19 @@ async fn sweep_treasury_excess(state: &AppState) {
 
     mark_swept_today(&state.db).await;
 }
-```
-
-> **Rate limiting on vault fundings.** The keeper and the `create_agreement` handler both share the vault keypair. To prevent a burst of crafted requests draining the vault faster than monitoring detects it, the vault funding path enforces a per-hour rate limit (`VAULT_FUNDING_RATE_LIMIT_PER_HOUR`). Requests exceeding this limit return `429 Too Many Requests` and are logged for ops review.
 
 /// Mark pending payments older than 15 minutes as expired.
-/// The accountSubscribe / polling window is 15 minutes — after this the
-/// payment reference is considered abandoned by the user.
-/// Does NOT cancel the subscription — see reconcile_late_payments below.
 async fn expire_timed_out_payments(state: &AppState) {
     sqlx::query!(
         "UPDATE agreement_payments
          SET status = 'expired'
          WHERE status = 'pending'
-           AND created_at < extract(epoch from now()) - 900
-        "
+           AND created_at < extract(epoch from now()) - 900"
     ).execute(&state.db).await.ok();
 }
 
-/// Reconciliation scan — runs every 5 minutes.
-/// Checks chain for any payments that arrived after their polling window expired.
-/// A user may broadcast a payment tx after the 15-minute window (network delay,
-/// slow wallet). If their payment confirms on-chain while status = 'expired',
-/// the funds would otherwise be stuck in the treasury ATA permanently.
-/// This scan catches those cases and initiates a full refund automatically (M-4).
+/// Reconciliation scan — checks chain for payments that arrived after their polling window expired.
 async fn reconcile_late_payments(state: &AppState) {
-    // Only check payments expired within the last hour —
-    // beyond that, assume no late arrival is coming
     let expired = sqlx::query!(
         "SELECT id, token_reference_pubkey, token_mint, token_amount
          FROM agreement_payments
@@ -2161,23 +2165,18 @@ async fn reconcile_late_payments(state: &AppState) {
             &state.solana,
             &payment.token_reference_pubkey,
         ).await {
-            // Late payment arrived — record tx and initiate full refund
-            // Full refund because the payment window already expired;
-            // no storage was uploaded, so nothing was spent on the user's behalf
             sqlx::query!(
                 "UPDATE agreement_payments
-                 SET status             = 'refund_pending',
-                     token_tx_signature = $1,
-                     refund_amount      = token_amount,
+                 SET status              = 'refund_pending',
+                     token_tx_signature  = $1,
+                     refund_amount       = token_amount,
                      refund_initiated_at = extract(epoch from now())
                  WHERE id = $2
                    AND status = 'expired'",
                 tx.signature, payment.id
             ).execute(&state.db).await.ok();
 
-            tracing::info!(
-                "Reconciled late payment {} — full refund initiated", payment.id
-            );
+            tracing::info!("Reconciled late payment {} — full refund initiated", payment.id);
         }
     }
 }
@@ -2194,7 +2193,6 @@ async fn cleanup_expired_auth_records(state: &AppState) {
 }
 
 async fn send_invitation_reminders(state: &AppState) {
-    // reminder_count = 0 AND older than INVITE_REMINDER_AFTER_SECONDS
     let needs_reminder = sqlx::query!(
         "SELECT * FROM party_invitations
          WHERE status = 'pending'
@@ -2225,15 +2223,68 @@ async fn expire_stale_invitations(state: &AppState) {
     .fetch_all(&state.db).await.unwrap_or_default();
 
     for inv in stale {
-        // Notify creator: party did not respond
         enqueue_invitation_expired_notification(&state, &inv).await;
-        // Push WS event if creator is online
         broadcast_ws(&state, "draft.invitation_expired", &inv);
     }
 }
 ```
 
-### 12.3 Notification Worker (`src/workers/notification_worker.rs`)
+### 12.3 Expiry Worker (`src/workers/expiry_worker.rs`)
+
+Submits `expire_agreement` transactions for agreements whose signing deadline has passed. Rather than polling every N seconds (which wastes gas on empty scans), this worker queries PostgreSQL for agreements that **just became eligible** and fires once per agreement.
+
+**Design principle:** the on-chain `expires_at` timestamp is the source of truth. The worker's only job is to notice when `now >= expires_at` and submit the transaction promptly. Since signing windows are measured in days, a scan interval of a few minutes introduces negligible delay while keeping gas costs proportional to actual expired agreements.
+
+```rust
+pub async fn run(state: AppState) {
+    // Scan every 5 minutes — signing windows are day-scale so sub-minute
+    // precision is unnecessary. 5 min keeps gas spend proportional to load.
+    let mut interval = tokio::time::interval(Duration::from_secs(300));
+    loop {
+        interval.tick().await;
+        expire_due_agreements(&state).await;
+    }
+}
+
+async fn expire_due_agreements(state: &AppState) {
+    // Atomic status transition to 'expiring' — only the instance that wins
+    // this UPDATE will submit the transaction. Prevents duplicate submissions
+    // across multiple server instances or consecutive scan cycles.
+    let locked = sqlx::query!(
+        "UPDATE agreement_parties
+         SET status = 'expiring'
+         WHERE status = 'PendingSignatures'
+           AND expires_at < extract(epoch from now())
+         RETURNING agreement_pda, creator_pubkey"
+    )
+    .fetch_all(&state.db).await.unwrap_or_default();
+
+    for row in locked {
+        match build_and_submit_expire_tx(&state, &row).await {
+            Ok(_) => {
+                tracing::info!("Submitted expire_agreement for {}", row.agreement_pda);
+                // Status will be updated to 'Expired' by the event listener
+                // when the transaction confirms on-chain.
+            }
+            Err(e) => {
+                // Revert so the next scan cycle retries
+                tracing::error!("expire_agreement failed for {}: {e}", row.agreement_pda);
+                sqlx::query!(
+                    "UPDATE agreement_parties SET status = 'PendingSignatures'
+                     WHERE agreement_pda = $1 AND status = 'expiring'",
+                    row.agreement_pda
+                ).execute(&state.db).await.ok();
+            }
+        }
+    }
+}
+```
+
+> **Why PostgreSQL polling instead of a scheduled job per agreement?** A per-agreement scheduled job (e.g. Tokio `sleep` until `expires_at`) would fire with zero delay and zero wasted scans, but requires in-memory state that is lost on server restart. The PostgreSQL approach is stateless and restart-safe: on any restart, the worker catches up on missed expirations immediately on the first scan. For agreements with day-scale windows, the 5-minute scan interval is imperceptible.
+
+> **Gas cost is proportional to load.** The worker only submits a transaction when a row actually transitions from `PendingSignatures` to `expiring`. An empty scan (no expired agreements) costs nothing. A busy platform with many expiring agreements pays gas proportionally — the correct economic behaviour for a gasless-to-users model.
+
+### 12.4 Notification Worker (`src/workers/notification_worker.rs`)
 
 Polls `notification_queue` every 5 seconds. Dispatches via email if the recipient has one on file; falls back to WS-only if not. SIWS users who have not yet added an email receive real-time WS notifications only — they will not receive email notifications until they add an email via `PUT /user/contacts`.
 
@@ -2276,7 +2327,7 @@ async fn dispatch(state: &AppState, job: &NotificationJob, contact: &Option<User
 }
 ```
 
-### 12.4 Notification Event Types & Templates
+### 12.5 Notification Event Types & Templates
 
 | Event | Subject | Recipients |
 |---|---|---|
@@ -2498,7 +2549,6 @@ Pactum's UX evolves in four stages, each reducing the blockchain knowledge requi
 |---|---|---|---|---|
 | v0.2 | **Payment** | Stripe credit card | No | Add `stripe-rust`, `POST /payment/webhook/stripe`, Stripe PaymentIntent flow. Method `'stripe'` in `agreement_payments.method`. Stripe refunds automated via Stripe API on cancel/expire — same pattern as stablecoin refunds. Unlocks creator payments without a stablecoin wallet. |
 | v0.2 | **Payment** | Fee sustainability review | No | Quarterly ops review of `PLATFORM_FEE_USD_CENTS` against SOL price. Break-even at ~$995/SOL — not an immediate risk but monitor. Raise fee in $0.50 increments if sustained high SOL price compresses margin below acceptable threshold. |
-| v0.2 | **Signing** | Gasless signing for parties | No | Platform partially signs each `sign_agreement` tx as fee payer. Parties with zero SOL balance can sign freely. Adds `PLATFORM_VAULT_KEYPAIR` as fee payer to `build_sign_agreement_tx`. |
 | v0.2 | **Security** | Multisig upgrade authority | No | Transfer backend deployment authority to a Squads M-of-N multisig. |
 | v0.2 | **Protocol** | Document encryption | No | Client-side AES-256 encryption before upload; key derived from creator wallet signature; platform never sees plaintext. Aligns with on-chain spec §11. |
 | v0.3 | **Identity** | Email-based party signing (MPC wallets) | No | Parties receive an email invitation link and sign via OTP — no wallet required. Backend integrates with an embedded wallet provider (Magic.link, Privy, or Turnkey) to derive a deterministic Solana keypair from the party's verified email. The derived pubkey is registered in `user_accounts` at invitation time and passed into `create_agreement.parties` as normal. The program sees a valid pubkey signature — it never knows the key was MPC-derived. Sequencing: party must complete email verification before `create_agreement` is submitted so their pubkey is known. |
