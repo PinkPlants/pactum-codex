@@ -1,6 +1,6 @@
 use crate::state::AppState;
+use async_trait::async_trait;
 use axum::{
-    async_trait,
     extract::FromRequestParts,
     http::{request::Parts, StatusCode},
 };
@@ -276,18 +276,6 @@ impl Config {
         };
 
         config
-    }
-}
-
-#[async_trait]
-impl FromRequestParts<AppState> for Config {
-    type Rejection = StatusCode;
-
-    async fn from_request_parts(
-        _parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        Ok(state.config.as_ref().clone())
     }
 }
 

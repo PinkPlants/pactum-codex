@@ -26,13 +26,15 @@ pub fn build_router(state: AppState) -> Router {
         .allow_headers([AUTHORIZATION, CONTENT_TYPE]);
 
     // Rate limiting: 60 requests per second, burst of 100
-    let governor = GovernorLayer::new(
-        GovernorConfigBuilder::default()
-            .per_second(60)
-            .burst_size(100)
-            .finish()
-            .unwrap(),
-    );
+    let governor = GovernorLayer {
+        config: std::sync::Arc::new(
+            GovernorConfigBuilder::default()
+                .per_second(60)
+                .burst_size(100)
+                .finish()
+                .unwrap(),
+        ),
+    };
 
     // Build router with all route groups merged
     Router::new()
@@ -173,6 +175,18 @@ fn agreement_routes() -> Router<AppState> {
         .route(
             "/agreement/:pda/sign",
             post(handlers::agreement::sign_agreement),
+        )
+        .route(
+            "/agreement/:pda/cancel",
+            post(handlers::agreement::cancel_agreement),
+        )
+        .route(
+            "/agreement/:pda/revoke",
+            post(handlers::agreement::vote_revoke),
+        )
+        .route(
+            "/agreement/:pda/retract",
+            post(handlers::agreement::retract_revoke_vote),
         )
 }
 

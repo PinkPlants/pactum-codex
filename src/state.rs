@@ -90,6 +90,12 @@ pub struct AppState {
     pub ws_channels: Arc<DashMap<Uuid, broadcast::Sender<WsEvent>>>,
 }
 
+impl AsRef<Config> for AppState {
+    fn as_ref(&self) -> &Config {
+        &self.config
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,7 +1,8 @@
 use crate::error::AppError;
 use crate::state::AppState;
 use crate::state::ProtectedKeypair;
-use solana_sdk::signer::keypair::Keypair;
+use solana_sdk::signature::Keypair;
+use solana_sdk::signer::Signer;
 
 /// Load a keypair from a file path (preferred) or base58 env var (fallback).
 /// The file should be mounted as a Docker secret or fetched from a secrets manager
@@ -14,8 +15,11 @@ pub fn load_keypair(path: &str) -> Result<ProtectedKeypair, AppError> {
     let bytes: Vec<u8> =
         serde_json::from_str(&json).map_err(|e| AppError::KeypairLoadFailed(e.to_string()))?;
 
-    let keypair =
-        Keypair::from_bytes(&bytes).map_err(|e| AppError::KeypairLoadFailed(e.to_string()))?;
+    let keypair_bytes: [u8; 64] = bytes
+        .try_into()
+        .map_err(|_| AppError::KeypairLoadFailed("Invalid keypair length".to_string()))?;
+    let keypair = Keypair::try_from(keypair_bytes.as_slice())
+        .map_err(|e| AppError::KeypairLoadFailed(e.to_string()))?;
 
     Ok(ProtectedKeypair(keypair))
 }

@@ -1,8 +1,9 @@
 use crate::config::Config;
 use crate::error::AppError;
 use crate::services::jwt::{decode_access_token, Claims};
+use crate::state::AppState;
+use async_trait::async_trait;
 use axum::{
-    async_trait,
     extract::FromRequestParts,
     http::{request::Parts, StatusCode},
 };
@@ -16,46 +17,35 @@ pub struct AuthUser {
 }
 
 #[async_trait]
-impl<S> FromRequestParts<S> for AuthUser
+impl FromRequestParts<AppState> for AuthUser
 where
-    S: Send + Sync,
-    Config: FromRequestParts<S>,
+    AppState: Send + Sync,
 {
     type Rejection = (StatusCode, String);
 
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         // Extract Authorization header
-        let auth_header = parts
+        let token = parts
             .headers
             .get("Authorization")
             .and_then(|h| h.to_str().ok())
+            .and_then(|h| h.strip_prefix("Bearer "))
+            .map(|t| t.to_string())
             .ok_or_else(|| {
                 (
                     StatusCode::UNAUTHORIZED,
-                    "Missing Authorization header".to_string(),
+                    "Missing or invalid Authorization header".to_string(),
                 )
             })?;
-
-        // Extract Bearer token
-        let token = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
-            (
-                StatusCode::UNAUTHORIZED,
-                "Invalid Authorization header format".to_string(),
-            )
-        })?;
 
         // Get config from state
-        let config = Config::from_request_parts(parts, state)
-            .await
-            .map_err(|_| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Failed to load config".to_string(),
-                )
-            })?;
+        let config: &Config = state.as_ref();
 
         // Decode and validate JWT
-        let claims = decode_access_token(token, &config).map_err(|_| {
+        let claims = decode_access_token(&token, config).map_err(|_| {
             (
                 StatusCode::UNAUTHORIZED,
                 "Invalid or expired token".to_string(),

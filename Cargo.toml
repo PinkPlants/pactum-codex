@@ -5,8 +5,10 @@ edition = "2021"
 
 [dependencies]
 # Web framework
-axum       = { version = "0.8", features = ["multipart", "ws"] }
-axum-extra = { version = "0.9" }
+axum       = { version = "0.7", features = ["multipart", "ws"] }
+axum-extra = { version = "0.9", features = ["cookie"] }
+async-trait = "0.1"
+http = "1"
 tokio      = { version = "1",   features = ["full"] }
 tower      = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
@@ -37,13 +39,14 @@ hmac    = "0.12"
 hex     = "0.4"
 
 # Solana
-solana-client    = "2.2"
-solana-sdk       = "2.2"
-spl-token        = "4"
-spl-associated-token-account = "2"
+solana-client = "3.1.9"
+solana-sdk = "4.0.1"
+
+spl-token = "9.0.0"
+spl-associated-token-account = "8.0.0"
 
 # Utilities
-uuid    = { version = "1", features = ["v4"] }
+uuid    = { version = "1", features = ["v4", "serde"] }
 chrono  = { version = "0.4", features = ["serde"] }
 dotenvy = "0.15"
 config  = "0.14"

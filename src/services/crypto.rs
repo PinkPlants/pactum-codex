@@ -28,7 +28,7 @@ pub fn decrypt(ciphertext: &[u8], nonce: &[u8; 12], key: &[u8; 32]) -> Result<St
 pub fn hmac_index(value: &str, key: &[u8; 32]) -> Vec<u8> {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
-    let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).unwrap();
     mac.update(value.as_bytes());
     mac.finalize().into_bytes().to_vec()
 }

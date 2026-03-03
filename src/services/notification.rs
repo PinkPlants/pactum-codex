@@ -69,7 +69,7 @@ impl NotificationEvent {
 }
 
 /// Notification job from notification_queue table
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct NotificationJob {
     pub id: Uuid,
     pub event_type: String,
@@ -106,8 +106,7 @@ pub async fn enqueue_notification(
 
 /// Fetch pending notification jobs
 pub async fn fetch_pending_jobs(db: &PgPool, limit: i64) -> Result<Vec<NotificationJob>, AppError> {
-    let jobs = sqlx::query_as!(
-        NotificationJob,
+    let jobs = sqlx::query_as::<_, NotificationJob>(
         r#"
         SELECT id, event_type, agreement_pda, recipient_pubkey, scheduled_at, status, attempts
         FROM notification_queue
@@ -115,9 +114,9 @@ pub async fn fetch_pending_jobs(db: &PgPool, limit: i64) -> Result<Vec<Notificat
         ORDER BY scheduled_at ASC
         LIMIT $2
         "#,
-        chrono::Utc::now().timestamp(),
-        limit
     )
+    .bind(chrono::Utc::now().timestamp())
+    .bind(limit)
     .fetch_all(db)
     .await
     .map_err(|_| AppError::InternalError)?;

@@ -1,7 +1,9 @@
+use crate::config::Config;
 use crate::error::AppError;
 use crate::middleware::auth::AuthUser;
+use crate::state::AppState;
+use async_trait::async_trait;
 use axum::{
-    async_trait,
     extract::FromRequestParts,
     http::{request::Parts, StatusCode},
 };
@@ -16,14 +18,16 @@ pub struct AuthUserWithWallet {
 }
 
 #[async_trait]
-impl<S> FromRequestParts<S> for AuthUserWithWallet
+impl FromRequestParts<AppState> for AuthUserWithWallet
 where
-    S: Send + Sync,
-    AuthUser: FromRequestParts<S>,
+    AppState: Send + Sync,
 {
     type Rejection = (StatusCode, String);
 
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         // First extract AuthUser (validates JWT)
         let auth = AuthUser::from_request_parts(parts, state)
             .await

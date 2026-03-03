@@ -46,11 +46,11 @@ pub async fn upload_handler(
                     return Err(AppError::InvalidFileType);
                 }
 
-                let bytes = field
-                    .with_size_limit(MAX_FILE_SIZE_BYTES)
-                    .bytes()
-                    .await
-                    .map_err(|_| AppError::FileTooLarge)?;
+                let bytes = field.bytes().await.map_err(|_| AppError::UploadFailed)?;
+
+                if bytes.len() > MAX_FILE_SIZE_BYTES {
+                    return Err(AppError::FileTooLarge);
+                }
 
                 file_bytes = Some(bytes.to_vec());
                 content_type = Some(field_content_type);

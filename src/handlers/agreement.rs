@@ -222,18 +222,23 @@ pub async fn create_agreement(
         let agreement_id = Uuid::new_v4();
         let agreement_id_bytes: [u8; 16] = *agreement_id.as_bytes();
         let (agreement_pda, _) = derive_agreement_pda(&creator_pubkey, &agreement_id_bytes);
+
+        let content_hash = hex_to_bytes32("0".repeat(64).as_str()).unwrap_or([0u8; 32]);
+
+        let parties: Vec<[u8; 32]> = party_slots
+            .iter()
+            .filter_map(|party| party.pubkey.as_ref())
+            .filter_map(|pk| pubkey_to_bytes32(pk))
+            .collect();
+
         let args = CreateAgreementArgs {
-            agreement_id: agreement_id.to_string(),
+            agreement_id: agreement_id_bytes,
             title: req.title.clone(),
-            content_hash: "placeholder_content_hash".to_string(),
+            content_hash,
             storage_uri: "ipfs://placeholder".to_string(),
             storage_backend: StorageBackend::Ipfs,
-            parties: party_slots
-                .iter()
-                .filter_map(|party| party.pubkey.clone())
-                .collect(),
-            vault_deposit: 0,
-            expires_in_secs: req.expires_in_secs,
+            parties,
+            expires_in_secs: req.expires_in_secs as i64,
         };
         let transaction = build_create_agreement_tx(
             state.solana.as_ref(),
@@ -347,12 +352,14 @@ pub async fn sign_agreement(
     }
 
     let creator_pubkey = Pubkey::new_from_array(agreement.creator);
+    let vault_funder = Pubkey::new_from_array(agreement.vault_funder);
     let transaction = build_sign_agreement_tx(
         state.solana.as_ref(),
         &creator_pubkey,
         &agreement.agreement_id,
         &signer_pubkey,
         req.metadata_uri,
+        &vault_funder,
     )
     .await?;
 
@@ -375,6 +382,132 @@ pub async fn sign_agreement(
         suggest_email,
         suggest_email_reason,
     }))
+}
+
+pub async fn cancel_agreement(
+    State(state): State<AppState>,
+    auth: AuthUserWithWallet,
+    Path(pda): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let pda_pubkey = Pubkey::from_str(&pda).map_err(|_| AppError::InternalError)?;
+    let canceller_pubkey = Pubkey::from_str(&auth.pubkey).map_err(|_| AppError::InternalError)?;
+
+    let account_data = state
+        .solana
+        .get_account_data(&pda_pubkey)
+        .map_err(|_| AppError::InternalError)?;
+    if account_data.len() < 8 {
+        return Err(AppError::InternalError);
+    }
+
+    let agreement = AgreementStateWire::try_from_slice(&account_data[8..])
+        .map_err(|_| AppError::InternalError)?;
+
+    let creator_pubkey = Pubkey::new_from_array(agreement.creator);
+
+    if canceller_pubkey != creator_pubkey {
+        return Err(AppError::Unauthorized);
+    }
+
+    let transaction = crate::services::solana::build_cancel_agreement_tx(
+        state.solana.as_ref(),
+        &creator_pubkey,
+        &agreement.agreement_id,
+        &canceller_pubkey,
+        &state.vault_keypair,
+    )
+    .await?;
+
+    Ok(Json(serde_json::json!({
+        "transaction": transaction,
+        "agreement_pda": pda,
+    })))
+}
+
+pub async fn vote_revoke(
+    State(state): State<AppState>,
+    auth: AuthUserWithWallet,
+    Path(pda): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let pda_pubkey = Pubkey::from_str(&pda).map_err(|_| AppError::InternalError)?;
+    let voter_pubkey = Pubkey::from_str(&auth.pubkey).map_err(|_| AppError::InternalError)?;
+
+    let account_data = state
+        .solana
+        .get_account_data(&pda_pubkey)
+        .map_err(|_| AppError::InternalError)?;
+    if account_data.len() < 8 {
+        return Err(AppError::InternalError);
+    }
+
+    let agreement = AgreementStateWire::try_from_slice(&account_data[8..])
+        .map_err(|_| AppError::InternalError)?;
+
+    let creator_pubkey = Pubkey::new_from_array(agreement.creator);
+
+    if !contains_pubkey_bytes(&agreement.parties, &voter_pubkey) {
+        return Err(AppError::Unauthorized);
+    }
+
+    let nft_asset = agreement
+        .nft_asset
+        .map(Pubkey::new_from_array)
+        .ok_or(AppError::InternalError)?;
+
+    let transaction = crate::services::solana::build_vote_revoke_tx(
+        state.solana.as_ref(),
+        &creator_pubkey,
+        &agreement.agreement_id,
+        &voter_pubkey,
+        &nft_asset,
+        &state.vault_keypair,
+    )
+    .await?;
+
+    Ok(Json(serde_json::json!({
+        "transaction": transaction,
+        "agreement_pda": pda,
+    })))
+}
+
+pub async fn retract_revoke_vote(
+    State(state): State<AppState>,
+    auth: AuthUserWithWallet,
+    Path(pda): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let pda_pubkey = Pubkey::from_str(&pda).map_err(|_| AppError::InternalError)?;
+    let voter_pubkey = Pubkey::from_str(&auth.pubkey).map_err(|_| AppError::InternalError)?;
+
+    let account_data = state
+        .solana
+        .get_account_data(&pda_pubkey)
+        .map_err(|_| AppError::InternalError)?;
+    if account_data.len() < 8 {
+        return Err(AppError::InternalError);
+    }
+
+    let agreement = AgreementStateWire::try_from_slice(&account_data[8..])
+        .map_err(|_| AppError::InternalError)?;
+
+    let creator_pubkey = Pubkey::new_from_array(agreement.creator);
+
+    if !contains_pubkey_bytes(&agreement.parties, &voter_pubkey) {
+        return Err(AppError::Unauthorized);
+    }
+
+    let transaction = crate::services::solana::build_retract_revoke_vote_tx(
+        state.solana.as_ref(),
+        &creator_pubkey,
+        &agreement.agreement_id,
+        &voter_pubkey,
+        &state.vault_keypair,
+    )
+    .await?;
+
+    Ok(Json(serde_json::json!({
+        "transaction": transaction,
+        "agreement_pda": pda,
+    })))
 }
 
 pub async fn get_agreement(
@@ -626,6 +759,15 @@ fn storage_backend_to_string(storage_backend: StorageBackend) -> String {
         StorageBackend::Arweave => "arweave",
     }
     .to_string()
+}
+
+fn hex_to_bytes32(hex_str: &str) -> Option<[u8; 32]> {
+    let bytes = hex::decode(hex_str).ok()?;
+    bytes.try_into().ok()
+}
+
+fn pubkey_to_bytes32(pubkey_str: &str) -> Option<[u8; 32]> {
+    Pubkey::from_str(pubkey_str).ok().map(|pk| pk.to_bytes())
 }
 
 #[cfg(test)]

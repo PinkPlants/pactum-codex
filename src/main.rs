@@ -35,6 +35,7 @@ pub mod middleware {
 
 pub mod workers {
     pub mod event_listener;
+    pub mod expiry_worker;
     pub mod keeper;
     pub mod notification_worker;
     pub mod refund_worker;
@@ -132,6 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(workers::keeper::run(state.clone()));
     tokio::spawn(workers::notification_worker::run(state.clone()));
     tokio::spawn(workers::refund_worker::run(state.clone()));
+    tokio::spawn(workers::expiry_worker::run(state.clone()));
     tracing::info!("✓ Background workers spawned");
 
     // Build router (all routes wired inside router::build_router)

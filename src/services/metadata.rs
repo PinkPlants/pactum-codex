@@ -105,7 +105,7 @@ mod tests {
             completed_at: None,
             revoked_at: None,
             nft_asset: None,
-            collection: None,
+            collection: [0u8; 32],
             vault_funder: [0u8; 32],
             revoke_votes: vec![],
             revoke_retract_counts: vec![],

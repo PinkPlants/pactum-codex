@@ -238,27 +238,30 @@ pub async fn submit_draft(
 
     let payload: DraftPayload =
         serde_json::from_value(draft.draft_payload).map_err(|_| AppError::InternalError)?;
-    let parties: Vec<String> = payload
+    let parties: Vec<[u8; 32]> = payload
         .parties
         .iter()
-        .filter_map(|party| {
-            let _ = party.invite_id;
-            party.pubkey.clone()
-        })
+        .filter_map(|party| party.pubkey.as_ref())
+        .filter_map(|pk| Pubkey::from_str(pk).ok().map(|p| p.to_bytes()))
         .collect();
 
     let creator_pubkey = Pubkey::from_str(&auth.pubkey).map_err(|_| AppError::InternalError)?;
     let agreement_id = Uuid::new_v4();
+    let agreement_id_bytes: [u8; 16] = *agreement_id.as_bytes();
+
+    let content_hash = hex::decode(&req.content_hash)
+        .map_err(|_| AppError::InvalidHash)?
+        .try_into()
+        .map_err(|_| AppError::InvalidHash)?;
 
     let args = CreateAgreementArgs {
-        agreement_id: agreement_id.to_string(),
+        agreement_id: agreement_id_bytes,
         title: payload.title,
-        content_hash: req.content_hash,
+        content_hash,
         storage_uri: req.storage_uri,
         storage_backend,
         parties,
-        vault_deposit: 0,
-        expires_in_secs: payload.expires_in_secs,
+        expires_in_secs: payload.expires_in_secs as i64,
     };
 
     let transaction = build_create_agreement_tx(

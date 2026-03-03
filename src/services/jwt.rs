@@ -57,7 +57,9 @@ pub fn issue_access_token(
 /// Decode and validate an access token
 pub fn decode_access_token(token: &str, config: &Config) -> Result<Claims, AppError> {
     let decoding_key = DecodingKey::from_secret(config.jwt_secret.as_bytes());
-    let validation = Validation::default();
+    let mut validation = Validation::default();
+    validation.validate_exp = true;
+    validation.leeway = 0;
 
     decode::<Claims>(token, &decoding_key, &validation)
         .map(|data| data.claims)
@@ -240,7 +242,11 @@ mod tests {
 
         // Decode should fail with Unauthorized
         let result = decode_access_token(&token, &config);
-        assert!(matches!(result, Err(AppError::Unauthorized)));
+        assert!(
+            matches!(result, Err(AppError::Unauthorized)),
+            "Expected Unauthorized error, got: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -288,7 +294,7 @@ mod tests {
             ),
             (
                 "test",
-                "9f86d081884c7d6d9ffd60814e0406352b5914985847328e1640fc69ec282ca34",
+                "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
             ),
         ];
 

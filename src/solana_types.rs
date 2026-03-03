@@ -35,6 +35,7 @@ pub const PROGRAM_ID: &str = "DF1cHTN9EE8Qonda1esTeYvFjmbYcoc52vDTjTMKvS1P";
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
 )]
+#[borsh(use_discriminant = true)]
 #[repr(u8)]
 pub enum AgreementStatus {
     /// Initial state - parties can sign
@@ -55,6 +56,7 @@ pub enum AgreementStatus {
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
 )]
+#[borsh(use_discriminant = true)]
 #[repr(u8)]
 pub enum StorageBackend {
     /// IPFS storage
@@ -86,7 +88,7 @@ pub struct AgreementStateWire {
     pub completed_at: Option<i64>,
     pub revoked_at: Option<i64>,
     pub nft_asset: Option<[u8; 32]>,
-    pub collection: Option<[u8; 32]>,
+    pub collection: [u8; 32],
     pub vault_funder: [u8; 32],
     pub revoke_votes: Vec<[u8; 32]>,
     pub revoke_retract_counts: Vec<RevokeRetractEntryWire>,
@@ -99,24 +101,24 @@ pub struct AgreementStateWire {
 ///
 /// This struct is serialized with borsh and sent to the on-chain program.
 /// Field order is CRITICAL for borsh compatibility.
+/// Matches IDL: agreement_id [u8;16], title String, content_hash [u8;32], storage_uri String,
+/// storage_backend StorageBackend, parties Vec<Pubkey>, expires_in_secs i64
 #[derive(Debug, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct CreateAgreementArgs {
-    /// Unique agreement identifier (UUID)
-    pub agreement_id: String,
+    /// Unique agreement identifier (16 bytes)
+    pub agreement_id: [u8; 16],
     /// Human-readable title of the agreement
     pub title: String,
-    /// Hash of agreement content (for verification)
-    pub content_hash: String,
+    /// Hash of agreement content (32 bytes)
+    pub content_hash: [u8; 32],
     /// URI pointing to agreement content (IPFS/Arweave)
     pub storage_uri: String,
     /// Which storage backend is used
     pub storage_backend: StorageBackend,
     /// List of party public keys that must sign
-    pub parties: Vec<String>,
-    /// Initial deposit to vault in lamports
-    pub vault_deposit: u64,
-    /// How many seconds until agreement expires
-    pub expires_in_secs: u64,
+    pub parties: Vec<[u8; 32]>,
+    /// How many seconds until agreement expires (i64 per IDL)
+    pub expires_in_secs: i64,
 }
 
 /// Arguments for sign_agreement instruction
@@ -127,6 +129,34 @@ pub struct SignAgreementArgs {
     /// Optional metadata URI (signer's metadata/proof)
     pub metadata_uri: Option<String>,
 }
+
+/// Arguments for cancel_agreement instruction
+///
+/// No arguments required - the instruction is identified by discriminator only.
+/// The creator pubkey and agreement_id are derived from the PDA.
+#[derive(Debug, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+pub struct CancelAgreementArgs;
+
+/// Arguments for expire_agreement instruction
+///
+/// No arguments required - the instruction is identified by discriminator only.
+/// The creator pubkey and agreement_id are derived from the PDA.
+#[derive(Debug, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+pub struct ExpireAgreementArgs;
+
+/// Arguments for vote_revoke instruction
+///
+/// No arguments required - the instruction is identified by discriminator only.
+/// The voter and nft_asset accounts are provided as instruction accounts.
+#[derive(Debug, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+pub struct VoteRevokeArgs;
+
+/// Arguments for retract_revoke_vote instruction
+///
+/// No arguments required - the instruction is identified by discriminator only.
+/// The voter account is provided as an instruction account.
+#[derive(Debug, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+pub struct RetractRevokeVoteArgs;
 
 #[cfg(test)]
 mod tests {
@@ -153,34 +183,32 @@ mod tests {
     #[test]
     fn test_create_agreement_args_borsh_roundtrip() {
         let args = CreateAgreementArgs {
-            agreement_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            agreement_id: [
+                0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4, 0xa7, 0x16, 0x44, 0x66, 0x55, 0x44,
+                0x00, 0x00,
+            ],
             title: "Partnership Agreement".to_string(),
-            content_hash: "QmZTR5bc9Bg7XA3a6h5oJZp8cCcMqVuEYz7MqeZVL7aMy".to_string(),
+            content_hash: [
+                0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+                0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
+                0x1c, 0x1d, 0x1e, 0x1f,
+            ],
             storage_uri: "ipfs://QmZTR5bc9Bg7XA3a6h5oJZp8cCcMqVuEYz7MqeZVL7aMy".to_string(),
             storage_backend: StorageBackend::Ipfs,
-            parties: vec![
-                "11111111111111111111111111111111".to_string(),
-                "22222222222222222222222222222222".to_string(),
-            ],
-            vault_deposit: 5_000_000,
+            parties: vec![[0; 32], [1; 32]],
             expires_in_secs: 2_592_000, // 30 days
         };
 
-        // Serialize
         let encoded = borsh::to_vec(&args).expect("Failed to serialize");
-
-        // Deserialize
         let decoded: CreateAgreementArgs =
             borsh::from_slice(&encoded).expect("Failed to deserialize");
 
-        // Verify roundtrip
         assert_eq!(args.agreement_id, decoded.agreement_id);
         assert_eq!(args.title, decoded.title);
         assert_eq!(args.content_hash, decoded.content_hash);
         assert_eq!(args.storage_uri, decoded.storage_uri);
         assert_eq!(args.storage_backend, decoded.storage_backend);
         assert_eq!(args.parties, decoded.parties);
-        assert_eq!(args.vault_deposit, decoded.vault_deposit);
         assert_eq!(args.expires_in_secs, decoded.expires_in_secs);
     }
 

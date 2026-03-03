@@ -45,10 +45,10 @@ pub async fn get_profile(
     auth: AuthUser,
 ) -> Result<Json<UserProfile>, AppError> {
     // Get user info
-    let user = sqlx::query!(
+    let user = sqlx::query_as::<_, (Uuid, Option<String>)>(
         "SELECT id, display_name FROM user_accounts WHERE id = $1",
-        auth.user_id
     )
+    .bind(auth.user_id)
     .fetch_one(&db)
     .await
     .map_err(|_| AppError::InternalError)?;
@@ -56,41 +56,39 @@ pub async fn get_profile(
     let mut linked_methods = Vec::new();
 
     // Check for wallet auth
-    if let Some(wallet_row) = sqlx::query!(
-        "SELECT pubkey FROM auth_wallet WHERE user_id = $1",
-        auth.user_id
-    )
-    .fetch_optional(&db)
-    .await
-    .map_err(|_| AppError::InternalError)?
+    if let Some(wallet_row) =
+        sqlx::query_scalar::<_, String>("SELECT pubkey FROM auth_wallet WHERE user_id = $1")
+            .bind(auth.user_id)
+            .fetch_optional(&db)
+            .await
+            .map_err(|_| AppError::InternalError)?
     {
         linked_methods.push(AuthMethod {
             auth_type: "wallet".to_string(),
             provider: None,
-            pubkey: Some(wallet_row.pubkey),
+            pubkey: Some(wallet_row),
         });
     }
 
     // Check for OAuth methods
-    let oauth_rows = sqlx::query!(
-        "SELECT provider FROM auth_oauth WHERE user_id = $1",
-        auth.user_id
-    )
-    .fetch_all(&db)
-    .await
-    .map_err(|_| AppError::InternalError)?;
+    let oauth_rows =
+        sqlx::query_scalar::<_, String>("SELECT provider FROM auth_oauth WHERE user_id = $1")
+            .bind(auth.user_id)
+            .fetch_all(&db)
+            .await
+            .map_err(|_| AppError::InternalError)?;
 
     for oauth in oauth_rows {
         linked_methods.push(AuthMethod {
             auth_type: "oauth".to_string(),
-            provider: Some(oauth.provider),
+            provider: Some(oauth),
             pubkey: None,
         });
     }
 
     Ok(Json(UserProfile {
-        id: user.id,
-        display_name: user.display_name,
+        id: user.0,
+        display_name: user.1,
         linked_auth_methods: linked_methods,
     }))
 }
@@ -108,14 +106,12 @@ pub async fn update_profile(
     }
 
     // Update user
-    sqlx::query!(
-        "UPDATE user_accounts SET display_name = $1 WHERE id = $2",
-        body.display_name,
-        auth.user_id
-    )
-    .execute(&db)
-    .await
-    .map_err(|_| AppError::InternalError)?;
+    sqlx::query("UPDATE user_accounts SET display_name = $1 WHERE id = $2")
+        .bind(&body.display_name)
+        .bind(auth.user_id)
+        .execute(&db)
+        .await
+        .map_err(|_| AppError::InternalError)?;
 
     // Return updated profile
     get_profile(State(db), auth).await
@@ -158,7 +154,7 @@ pub async fn update_contacts(
     };
 
     // UPSERT contacts
-    sqlx::query!(
+    sqlx::query(
         "INSERT INTO user_contacts (user_id, email_enc, email_nonce, email_index, phone_enc, phone_nonce, push_token_enc, push_token_nonce, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, extract(epoch from now()))
          ON CONFLICT (user_id)
@@ -171,15 +167,15 @@ pub async fn update_contacts(
              push_token_enc = COALESCE($7, user_contacts.push_token_enc),
              push_token_nonce = COALESCE($8, user_contacts.push_token_nonce),
              updated_at = extract(epoch from now())",
-        auth.user_id,
-        email_enc,
-        email_nonce,
-        email_index,
-        phone_enc,
-        phone_nonce,
-        push_enc,
-        push_nonce
     )
+    .bind(auth.user_id)
+    .bind(email_enc)
+    .bind(email_nonce)
+    .bind(email_index)
+    .bind(phone_enc)
+    .bind(phone_nonce)
+    .bind(push_enc)
+    .bind(push_nonce)
     .execute(&db)
     .await
     .map_err(|_| AppError::InternalError)?;
@@ -195,7 +191,8 @@ pub async fn delete_contacts(
     State(db): State<PgPool>,
     auth: AuthUser,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    sqlx::query!("DELETE FROM user_contacts WHERE user_id = $1", auth.user_id)
+    sqlx::query("DELETE FROM user_contacts WHERE user_id = $1")
+        .bind(auth.user_id)
         .execute(&db)
         .await
         .map_err(|_| AppError::InternalError)?;

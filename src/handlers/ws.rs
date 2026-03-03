@@ -266,8 +266,8 @@ mod tests {
         assert!(!is_allowed_origin(&headers));
     }
 
-    #[test]
-    fn send_to_user_returns_false_when_offline() {
+    #[tokio::test]
+    async fn send_to_user_returns_false_when_offline() {
         let state = test_state();
         let user_id = Uuid::new_v4();
 
@@ -303,8 +303,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn disconnect_cleanup_removes_channel() {
+    #[tokio::test]
+    async fn disconnect_cleanup_removes_channel() {
         let state = test_state();
         let user_id = Uuid::new_v4();
         let (sender, _receiver) = broadcast::channel(64);

@@ -11,7 +11,7 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
     Json,
 };
-use axum_extra::extract::cookie::{time::Duration as CookieDuration, Cookie, CookieJar, SameSite};
+use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use oauth2::{
     basic::BasicClient, AuthUrl, ClientId, ClientSecret, CsrfToken, RedirectUrl, Scope, TokenUrl,
 };
@@ -257,13 +257,13 @@ pub async fn verify(
     let pubkey_str = body.pubkey.clone();
 
     // 1. Atomically consume nonce (prevents replay attacks)
-    let row = sqlx::query!(
+    let row = sqlx::query_scalar::<_, String>(
         "DELETE FROM siws_nonces
          WHERE nonce = $1
            AND created_at > extract(epoch from now()) - 300
          RETURNING nonce",
-        body.nonce
     )
+    .bind(&body.nonce)
     .fetch_optional(&db)
     .await
     .map_err(|_| AppError::InternalError)?;
@@ -284,31 +284,29 @@ pub async fn verify(
         return Err(AppError::Unauthorized);
     }
 
-    let existing_user_id = sqlx::query_scalar!(
-        "SELECT user_id FROM auth_wallet WHERE pubkey = $1",
-        pubkey_str
-    )
-    .fetch_optional(&db)
-    .await
-    .map_err(|_| AppError::InternalError)?;
+    let existing_user_id =
+        sqlx::query_scalar::<_, Uuid>("SELECT user_id FROM auth_wallet WHERE pubkey = $1")
+            .bind(&pubkey_str)
+            .fetch_optional(&db)
+            .await
+            .map_err(|_| AppError::InternalError)?;
 
     let user_id = match existing_user_id {
         Some(user_id) => user_id,
         None => {
-            let user_id =
-                sqlx::query_scalar!("INSERT INTO user_accounts DEFAULT VALUES RETURNING id")
-                    .fetch_one(&db)
-                    .await
-                    .map_err(|_| AppError::InternalError)?;
-
-            sqlx::query!(
-                "INSERT INTO auth_wallet (user_id, pubkey) VALUES ($1, $2)",
-                user_id,
-                body.pubkey
+            let user_id = sqlx::query_scalar::<_, Uuid>(
+                "INSERT INTO user_accounts DEFAULT VALUES RETURNING id",
             )
-            .execute(&db)
+            .fetch_one(&db)
             .await
             .map_err(|_| AppError::InternalError)?;
+
+            sqlx::query("INSERT INTO auth_wallet (user_id, pubkey) VALUES ($1, $2)")
+                .bind(user_id)
+                .bind(&body.pubkey)
+                .execute(&db)
+                .await
+                .map_err(|_| AppError::InternalError)?;
 
             user_id
         }
@@ -341,13 +339,13 @@ pub async fn link_wallet(
     let pubkey_str = body.pubkey.clone();
 
     // 1. Atomically consume nonce (same pattern as verify)
-    let row = sqlx::query!(
+    let row = sqlx::query_scalar::<_, String>(
         "DELETE FROM siws_nonces
          WHERE nonce = $1
            AND created_at > extract(epoch from now()) - 300
          RETURNING nonce",
-        body.nonce
     )
+    .bind(&body.nonce)
     .fetch_optional(&db)
     .await
     .map_err(|_| AppError::InternalError)?;
@@ -369,13 +367,12 @@ pub async fn link_wallet(
     }
 
     // 3. Check if pubkey is already linked to another user
-    let existing_user_id = sqlx::query_scalar!(
-        "SELECT user_id FROM auth_wallet WHERE pubkey = $1",
-        pubkey_str
-    )
-    .fetch_optional(&db)
-    .await
-    .map_err(|_| AppError::InternalError)?;
+    let existing_user_id =
+        sqlx::query_scalar::<_, Uuid>("SELECT user_id FROM auth_wallet WHERE pubkey = $1")
+            .bind(&pubkey_str)
+            .fetch_optional(&db)
+            .await
+            .map_err(|_| AppError::InternalError)?;
 
     if existing_user_id.is_some() {
         // Pubkey already linked to another user
@@ -383,14 +380,12 @@ pub async fn link_wallet(
     }
 
     // 4. Insert wallet link for current user
-    sqlx::query!(
-        "INSERT INTO auth_wallet (user_id, pubkey) VALUES ($1, $2)",
-        auth.user_id,
-        pubkey_str
-    )
-    .execute(&db)
-    .await
-    .map_err(|_| AppError::InternalError)?;
+    sqlx::query("INSERT INTO auth_wallet (user_id, pubkey) VALUES ($1, $2)")
+        .bind(auth.user_id)
+        .bind(&pubkey_str)
+        .execute(&db)
+        .await
+        .map_err(|_| AppError::InternalError)?;
 
     // 5. Issue new JWT with pubkey included in claims
     let access_token = issue_access_token(auth.user_id, Some(pubkey_str), &config)?;
@@ -444,7 +439,7 @@ fn oauth_redirect(config: &Config, jar: CookieJar, provider: OAuthProvider) -> i
     match build_provider_auth_url(config, provider) {
         Ok((auth_url, state)) => {
             let cookie = build_oauth_state_cookie(provider.state_cookie_name(), &state);
-            (jar.add(cookie), Redirect::to(&auth_url)).into_response()
+            (jar.add(cookie), Redirect::to(auth_url.as_str())).into_response()
         }
         Err(_) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -511,16 +506,11 @@ fn build_provider_auth_url(
     let redirect_uri = RedirectUrl::new(provider.redirect_uri(config).to_string())
         .map_err(|_| AppError::InternalError)?;
 
-    let mut request = BasicClient::new(
-        ClientId::new(provider.client_id(config).to_string()),
-        Some(ClientSecret::new(
-            provider.client_secret(config).to_string(),
-        )),
-        auth_url,
-        Some(token_url),
-    )
-    .set_redirect_uri(redirect_uri)
-    .authorize_url(CsrfToken::new_random);
+    let client_id = ClientId::new(provider.client_id(config).to_string());
+    let client_secret = ClientSecret::new(provider.client_secret(config).to_string());
+    let client = BasicClient::new(client_id, Some(client_secret), auth_url, Some(token_url))
+        .set_redirect_uri(redirect_uri);
+    let mut request = client.authorize_url(CsrfToken::new_random);
 
     for scope in provider.scopes() {
         request = request.add_scope(Scope::new(scope.to_string()));
@@ -536,7 +526,11 @@ fn build_oauth_state_cookie(name: &str, state: &str) -> Cookie<'static> {
         .secure(true)
         .same_site(SameSite::Lax)
         .path("/")
-        .max_age(CookieDuration::minutes(10))
+        .max_age(
+            std::time::Duration::from_secs(600)
+                .try_into()
+                .unwrap_or_default(),
+        )
         .build()
 }
 
@@ -776,24 +770,26 @@ pub async fn refresh(
     let token_hash = sha256_hex(&body.refresh_token);
 
     // Delete-on-use: atomically consume refresh token
-    let row = sqlx::query!(
+    let row = sqlx::query_scalar::<_, Uuid>(
         "DELETE FROM refresh_tokens
          WHERE token_hash = $1
            AND expires_at > extract(epoch from now())
          RETURNING user_id",
-        token_hash
     )
+    .bind(&token_hash)
     .fetch_optional(&db)
     .await
     .map_err(|_| AppError::InternalError)?;
 
-    let user_id = row.ok_or(AppError::InvalidRefreshToken)?.user_id;
+    let user_id = row.ok_or(AppError::InvalidRefreshToken)?;
 
     // Fetch user's current wallet pubkey (may have changed)
-    let pubkey = sqlx::query_scalar!("SELECT pubkey FROM auth_wallet WHERE user_id = $1", user_id)
-        .fetch_optional(&db)
-        .await
-        .map_err(|_| AppError::InternalError)?;
+    let pubkey =
+        sqlx::query_scalar::<_, String>("SELECT pubkey FROM auth_wallet WHERE user_id = $1")
+            .bind(user_id)
+            .fetch_optional(&db)
+            .await
+            .map_err(|_| AppError::InternalError)?;
 
     // Issue new tokens
     let access_token = issue_access_token(user_id, pubkey.clone(), &config)?;
@@ -815,13 +811,11 @@ pub async fn logout(
 
     let token_hash = sha256_hex(&body.refresh_token);
 
-    sqlx::query!(
-        "DELETE FROM refresh_tokens WHERE token_hash = $1",
-        token_hash
-    )
-    .execute(&db)
-    .await
-    .map_err(|_| AppError::InternalError)?;
+    sqlx::query("DELETE FROM refresh_tokens WHERE token_hash = $1")
+        .bind(&token_hash)
+        .execute(&db)
+        .await
+        .map_err(|_| AppError::InternalError)?;
 
     Ok(Json(
         serde_json::json!({ "message": "Logged out successfully" }),
