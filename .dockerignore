@@ -1,0 +1,59 @@
+# Docker Build Context Ignore Rules
+# Optimizes build performance by excluding unnecessary files
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Docker
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# Rust build artifacts
+target/
+Cargo.lock
+cargo-timing*
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.json.key
+*keypair*
+*secret*
+*password*
+
+# Documentation
+*.md
+!README.md
+docs/
+
+# Test files
+tests/
+*.test.rs
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp

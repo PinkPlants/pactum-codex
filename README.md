@@ -120,20 +120,81 @@ This backend is fully compliant with the Pactum Solana program IDL (v0.1.0):
 │   ├── state.rs           # AppState with ProtectedKeypair
 │   ├── config.rs          # Environment configuration
 │   └── main.rs
+├── api/
+│   ├── Dockerfile              # Production multi-stage Dockerfile
+│   ├── docker-compose.dev.yml  # Development overrides
+│   └── README.md               # Docker setup guide
 ├── migrations/            # sqlx database migrations
+├── docker-compose.yml     # Production orchestration
 ├── Cargo.toml
 └── .env.example          # Configuration template
 ```
 
 ## Quick Start
 
-### Prerequisites
+Choose your preferred deployment method:
+
+### Option A: Docker (Recommended)
+
+The fastest way to get started with all dependencies pre-configured.
+
+#### Prerequisites
+
+- Docker 20.10+
+- Docker Compose 2.0+
+
+#### 1. Clone and Configure
+
+```bash
+git clone <repo>
+cd pactum-backend
+cp .env.example .env
+# Edit .env with your values (RPC URLs, OAuth credentials, etc.)
+```
+
+#### 2. Create Docker Secrets
+
+```bash
+# Database password
+echo "$(openssl rand -base64 32)" | docker secret create db_password -
+
+# Platform keypairs (generate if you don't have them)
+solana-keygen new -o vault_keypair.json
+solana-keygen new -o treasury_keypair.json
+docker secret create vault_keypair ./vault_keypair.json
+docker secret create treasury_keypair ./treasury_keypair.json
+
+# Optional: Arweave wallet for document storage
+docker secret create arweave_wallet ./arweave-wallet.json
+```
+
+#### 3. Run
+
+```bash
+# Production mode
+docker-compose up -d
+
+# Development mode (with hot reload)
+docker-compose -f docker-compose.yml -f api/docker-compose.dev.yml up
+```
+
+The API will be available at `http://localhost:8080`.
+
+See [`api/README.md`](api/README.md) for detailed Docker instructions.
+
+---
+
+### Option B: Native Development
+
+For local development without Docker.
+
+#### Prerequisites
 
 - Rust 1.75+
 - PostgreSQL 16+
 - Solana CLI (optional, for testing)
 
-### 1. Clone and Setup
+#### 1. Clone and Setup
 
 ```bash
 git clone <repo>
@@ -142,7 +203,7 @@ cp .env.example .env
 # Edit .env with your values
 ```
 
-### 2. Database Setup
+#### 2. Database Setup
 
 ```bash
 # Create database
@@ -152,7 +213,7 @@ createdb pactum
 cargo sqlx migrate run
 ```
 
-### 3. Keypair Setup
+#### 3. Keypair Setup
 
 ```bash
 # Generate platform keypairs (keep these secure!)
@@ -164,7 +225,7 @@ export PLATFORM_VAULT_PUBKEY=$(solana-keygen pubkey /run/secrets/vault_keypair.j
 export PLATFORM_TREASURY_PUBKEY=$(solana-keygen pubkey /run/secrets/treasury_keypair.json)
 ```
 
-### 4. Run
+#### 4. Run
 
 ```bash
 # Development
@@ -298,6 +359,8 @@ See `.env.example` for all options:
 | `STABLECOIN_PYUSD_MINT` | PYUSD mint address |
 | `IPFS_API_URL` / `IPFS_JWT` | IPFS credentials |
 | `RESEND_API_KEY` | Email service API key |
+| `PLATFORM_VAULT_KEYPAIR_PATH` | Path to vault keypair file |
+| `PLATFORM_TREASURY_KEYPAIR_PATH` | Path to treasury keypair file |
 
 ## Security Model
 
@@ -310,7 +373,18 @@ See `.env.example` for all options:
 - **Rate limiting**: Per-IP limits via tower-governor
 - **ProtectedKeypair**: Newtype wrapper prevents keypair exposure in logs
 
+### Docker Security
+
+- **Non-root containers**: Runs as UID 10001, not root
+- **Docker secrets**: Keypairs never in environment variables or image layers
+- **Minimal attack surface**: `debian:bookworm-slim` base with only runtime dependencies
+- **No secrets in git**: `.gitignore` and `.dockerignore` exclude all keypair files
+- **Resource limits**: CPU and memory constraints prevent resource exhaustion
+- **Health checks**: Automatic container restart on failure
+
 ## Development
+
+### Standard Development
 
 ```bash
 # Format
@@ -327,6 +401,39 @@ cargo sqlx migrate add <name>
 
 # Check IDL compliance
 cargo test services::solana::tests
+```
+
+### Docker Development
+
+```bash
+# Start with hot reload
+docker-compose -f docker-compose.yml -f api/docker-compose.dev.yml up
+
+# View logs
+docker-compose logs -f api
+
+# Rebuild after dependency changes
+docker-compose build --no-cache
+
+# Reset everything (including database)
+docker-compose down -v
+docker-compose up -d
+
+# Run database migrations manually
+docker-compose run --rm migrations
+
+# Access PostgreSQL
+docker exec -it pactum-postgres psql -U pactum -d pactum
+```
+
+### Production Deployment
+
+```bash
+# Deploy with Docker Swarm
+docker stack deploy -c docker-compose.yml pactum
+
+# Or with docker-compose directly
+docker-compose -f docker-compose.yml up -d
 ```
 
 ## License

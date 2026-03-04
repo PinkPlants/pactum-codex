@@ -1,0 +1,252 @@
+# Pactum Backend - Docker Compose Configuration
+# Production-ready setup with PostgreSQL, secrets management, and health checks
+#
+# Setup Instructions:
+# 1. Create required Docker secrets first:
+#    echo "$(openssl rand -base64 32)" | docker secret create db_password -
+#    docker secret create vault_keypair /path/to/vault_keypair.json
+#    docker secret create treasury_keypair /path/to/treasury_keypair.json
+#
+# 2. Copy .env.example to .env and fill in your values
+#
+# 3. Deploy:
+#    docker-compose up -d
+
+version: "3.8"
+
+services:
+  # ===========================================================================
+  # API Service - Pactum Backend
+  # ===========================================================================
+  api:
+    build:
+      context: ..
+      dockerfile: api/Dockerfile
+      target: runtime
+    container_name: pactum-api
+    ports:
+      - "${SERVER_PORT:-8080}:8080"
+    environment:
+      # Database - password comes from secret
+      DATABASE_URL: postgres://pactum@postgres:5432/pactum
+      PGPASSWORD_FILE: /run/secrets/db_password
+      
+      # Solana
+      SOLANA_RPC_URL: ${SOLANA_RPC_URL}
+      SOLANA_WS_URL: ${SOLANA_WS_URL}
+      
+      # Program
+      PROGRAM_ID: ${PROGRAM_ID}
+      
+      # JWT
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_ACCESS_EXPIRY_SECONDS: ${JWT_ACCESS_EXPIRY_SECONDS:-900}
+      JWT_REFRESH_EXPIRY_SECONDS: ${JWT_REFRESH_EXPIRY_SECONDS:-604800}
+      
+      # Encryption
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      ENCRYPTION_INDEX_KEY: ${ENCRYPTION_INDEX_KEY}
+      
+      # OAuth
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI}
+      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID}
+      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET}
+      MICROSOFT_REDIRECT_URI: ${MICROSOFT_REDIRECT_URI}
+      MICROSOFT_TENANT: ${MICROSOFT_TENANT:-common}
+      
+      # Email
+      RESEND_API_KEY: ${RESEND_API_KEY}
+      EMAIL_FROM: ${EMAIL_FROM:-noreply@pactum.app}
+      INVITE_BASE_URL: ${INVITE_BASE_URL}
+      INVITE_EXPIRY_SECONDS: ${INVITE_EXPIRY_SECONDS:-604800}
+      INVITE_REMINDER_AFTER_SECONDS: ${INVITE_REMINDER_AFTER_SECONDS:-259200}
+      
+      # Payment
+      PLATFORM_FEE_USD_CENTS: ${PLATFORM_FEE_USD_CENTS:-199}
+      PLATFORM_FEE_FREE_TIER: ${PLATFORM_FEE_FREE_TIER:-3}
+      PLATFORM_NONREFUNDABLE_FEE_CENTS: ${PLATFORM_NONREFUNDABLE_FEE_CENTS:-10}
+      
+      # Platform keypairs - paths to secrets
+      PLATFORM_VAULT_PUBKEY: ${PLATFORM_VAULT_PUBKEY}
+      PLATFORM_VAULT_KEYPAIR_PATH: /run/secrets/vault_keypair
+      PLATFORM_TREASURY_PUBKEY: ${PLATFORM_TREASURY_PUBKEY}
+      PLATFORM_TREASURY_KEYPAIR_PATH: /run/secrets/treasury_keypair
+      
+      # Hot wallet thresholds
+      VAULT_MIN_SOL_ALERT: ${VAULT_MIN_SOL_ALERT:-0.5}
+      VAULT_MIN_SOL_CIRCUIT_BREAKER: ${VAULT_MIN_SOL_CIRCUIT_BREAKER:-0.1}
+      VAULT_FUNDING_RATE_LIMIT_PER_HOUR: ${VAULT_FUNDING_RATE_LIMIT_PER_HOUR:-50}
+      TREASURY_MIN_USDC_ALERT: ${TREASURY_MIN_USDC_ALERT:-20000000}
+      TREASURY_FLOAT_PER_TOKEN: ${TREASURY_FLOAT_PER_TOKEN:-50000000}
+      TREASURY_SWEEP_DEST: ${TREASURY_SWEEP_DEST}
+      
+      # Stablecoins
+      STABLECOIN_USDC_MINT: ${STABLECOIN_USDC_MINT}
+      STABLECOIN_USDC_ATA: ${STABLECOIN_USDC_ATA}
+      STABLECOIN_USDT_MINT: ${STABLECOIN_USDT_MINT}
+      STABLECOIN_USDT_ATA: ${STABLECOIN_USDT_ATA}
+      STABLECOIN_PYUSD_MINT: ${STABLECOIN_PYUSD_MINT}
+      STABLECOIN_PYUSD_ATA: ${STABLECOIN_PYUSD_ATA}
+      
+      # Storage
+      IPFS_API_URL: ${IPFS_API_URL}
+      IPFS_JWT: ${IPFS_JWT}
+      ARWEAVE_WALLET_PATH: /run/secrets/arweave_wallet
+      
+      # Server
+      SERVER_PORT: 8080
+      SERVER_HOST: 0.0.0.0
+      
+      # Rust/Tracing
+      RUST_LOG: ${RUST_LOG:-info}
+      RUST_BACKTRACE: ${RUST_BACKTRACE:-0}
+    
+    secrets:
+      - db_password
+      - vault_keypair
+      - treasury_keypair
+      - arweave_wallet
+    
+    networks:
+      - frontend
+      - backend
+    
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+    
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/pactum-backend", "--health-check"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ===========================================================================
+  # Database Migrations
+  # ===========================================================================
+  migrations:
+    build:
+      context: ..
+      dockerfile: api/Dockerfile
+      target: builder
+    container_name: pactum-migrations
+    command: >
+      sh -c "
+        echo 'Waiting for PostgreSQL...' &&
+        sleep 5 &&
+        cargo sqlx migrate run --database-url \"postgres://pactum:$$(cat /run/secrets/db_password)@postgres:5432/pactum\"
+      "
+    environment:
+      DATABASE_URL: postgres://pactum@postgres:5432/pactum
+    secrets:
+      - db_password
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      restart_policy:
+        condition: none
+
+  # ===========================================================================
+  # PostgreSQL Database
+  # ===========================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: pactum-postgres
+    environment:
+      POSTGRES_USER: pactum
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+      POSTGRES_DB: pactum
+    secrets:
+      - db_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
+    ports:
+      # Exposed only for development/debugging. Remove in production.
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pactum -d pactum"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# =============================================================================
+# Named Volumes
+# =============================================================================
+volumes:
+  postgres_data:
+    driver: local
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: false
+
+# =============================================================================
+# Secrets
+# =============================================================================
+# These must be created before running docker-compose:
+#
+# echo "$(openssl rand -base64 32)" | docker secret create db_password -
+# docker secret create vault_keypair /path/to/vault_keypair.json
+# docker secret create treasury_keypair /path/to/treasury_keypair.json
+# docker secret create arweave_wallet /path/to/arweave-wallet.json
+#
+secrets:
+  db_password:
+    external: true
+  vault_keypair:
+    external: true
+  treasury_keypair:
+    external: true
+  arweave_wallet:
+    external: true

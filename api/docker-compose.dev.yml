@@ -1,0 +1,43 @@
+# Development Override for Docker Compose
+# 
+# Usage:
+#   docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# This file overrides production settings for local development:
+# - Hot reload with volume mounts
+# - Debug logging
+# - Local secret files (instead of Docker secrets)
+
+version: "3.8"
+
+services:
+  api:
+    build:
+      target: builder  # Use builder stage for development
+    command: cargo watch -x run
+    volumes:
+      # Mount source code for hot reload
+      - ../src:/app/src:ro
+      - ../Cargo.toml:/app/Cargo.toml:ro
+      - ../Cargo.lock:/app/Cargo.lock:ro
+      # Persist target directory between restarts
+      - target_cache:/app/target
+      # Mount local secrets for development
+      - ./secrets:/run/secrets:ro
+    environment:
+      RUST_LOG: debug
+      RUST_BACKTRACE: 1
+    # Override secrets with local files for development
+    secrets: []
+    
+  postgres:
+    ports:
+      # Expose PostgreSQL for local development tools
+      - "5432:5432"
+    environment:
+      # Use plaintext password for local development
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-dev_password}
+    secrets: []
+
+volumes:
+  target_cache:
