@@ -5,7 +5,7 @@
 # =============================================================================
 # Stage 1: Dependencies Cache
 # =============================================================================
-FROM rust:1.82-slim AS deps
+FROM rust:1.88-slim AS deps
 
 WORKDIR /app
 
@@ -27,7 +27,7 @@ RUN cargo build --release && rm -rf src
 # =============================================================================
 # Stage 2: Build
 # =============================================================================
-FROM rust:1.82-slim AS builder
+FROM rust:1.88-slim AS builder
 
 WORKDIR /app
 
@@ -40,17 +40,20 @@ RUN apt-get update && apt-get install -y \
 # Copy cached dependencies from deps stage
 COPY --from=deps /app/target ./target
 COPY --from=deps /usr/local/cargo/registry /usr/local/cargo/registry
-COPY --from=deps /usr/local/cargo/git /usr/local/cargo/git
+# Create cargo git directory if it doesn't exist (some builds don't use git deps)
+RUN mkdir -p /usr/local/cargo/git
 
 # Copy manifests and source code
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY .sqlx ./.sqlx
+COPY migrations ./migrations
 
-# Touch main.rs to ensure rebuild
-RUN touch src/main.rs
+# Clean up dummy build artifacts to avoid symbol conflicts
+RUN rm -rf target/release/pactum-backend* target/release/deps/pactum_backend* target/release/.fingerprint/pactum-backend* 2>/dev/null || true
 
-# Build release binary
+# Build release binary (disable LTO to avoid symbol conflicts with solana-program)
+ENV CARGO_PROFILE_RELEASE_LTO=false
 RUN cargo build --release --bin pactum-backend
 
 # Strip binary to reduce size
