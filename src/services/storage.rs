@@ -132,7 +132,10 @@ fn upload_to_ipfs_with_client(
 
 pub fn get_ipfs_gateway_url(cid: &str, config: &Config) -> String {
     let clean_cid = cid.strip_prefix("ipfs://").unwrap_or(cid);
-    format!("https://{}/ipfs/{}", config.pinata_gateway_domain, clean_cid)
+    format!(
+        "https://{}/ipfs/{}",
+        config.pinata_gateway_domain, clean_cid
+    )
 }
 
 fn upload_to_arweave_with_client(
