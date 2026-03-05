@@ -143,6 +143,11 @@ The fastest way to get started with all dependencies pre-configured.
 - Docker 20.10+
 - Docker Compose 2.0+
 
+**Note**: A pre-built image is available on DockerHub:
+```bash
+docker pull univer5al/pactum-codex:latest
+```
+
 #### 1. Clone and Configure
 
 ```bash
@@ -190,7 +195,7 @@ For local development without Docker.
 
 #### Prerequisites
 
-- Rust 1.75+
+- Rust 1.88+
 - PostgreSQL 16+
 - Solana CLI (optional, for testing)
 
@@ -373,6 +378,16 @@ See `.env.example` for all options:
 - **Rate limiting**: Per-IP limits via tower-governor
 - **ProtectedKeypair**: Newtype wrapper prevents keypair exposure in logs
 
+### Docker Build Notes
+
+The Dockerfile has been optimized for reliable builds:
+
+- **Rust 1.88+**: Required for compatibility with newer dependencies
+- **Multi-stage caching**: Dependencies cached in separate stage for faster rebuilds
+- **LTO disabled**: Link Time Optimization disabled to prevent symbol conflicts with Solana crates
+- **Artifact cleanup**: Dummy build artifacts removed to avoid entrypoint symbol conflicts
+- **Migrations included**: SQLx migration files copied into build context
+
 ### Docker Security
 
 - **Non-root containers**: Runs as UID 10001, not root
@@ -438,7 +453,7 @@ docker-compose -f docker-compose.yml up -d
 
 ## License
 
-[LICENSE](./LICENSE)
+[GPL-3.0](./LICENSE)
 
 ## Support
 
