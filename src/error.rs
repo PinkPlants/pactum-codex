@@ -48,6 +48,19 @@ pub enum AppError {
     #[error("Upload failed")]
     UploadFailed,
 
+    // Pinata IPFS Errors (401/429/422/503)
+    #[error("Pinata authentication failed: {message}")]
+    PinataAuthError { message: String },
+
+    #[error("Pinata rate limit exceeded. Retry after {retry_after} seconds")]
+    PinataRateLimitError { retry_after: u64 },
+
+    #[error("Pinata upload failed: {message}")]
+    PinataUploadError { message: String },
+
+    #[error("Pinata network error: {message}")]
+    PinataNetworkError { message: String },
+
     // Draft & Payment (400/409/422)
     #[error("Draft not ready")]
     DraftNotReady,
@@ -189,6 +202,29 @@ impl IntoResponse for AppError {
                 "Upload failed",
                 json!({ "error": "upload_failed" }),
             ),
+
+            // Pinata-specific errors
+            AppError::PinataAuthError { message } => (
+                StatusCode::UNAUTHORIZED,
+                "Pinata authentication failed",
+                json!({ "error": "pinata_auth_error", "message": message }),
+            ),
+            AppError::PinataRateLimitError { retry_after } => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Pinata rate limit exceeded",
+                json!({ "error": "pinata_rate_limited", "retry_after": retry_after }),
+            ),
+            AppError::PinataUploadError { message } => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Pinata upload failed",
+                json!({ "error": "pinata_upload_failed", "message": message }),
+            ),
+            AppError::PinataNetworkError { message } => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Pinata network error",
+                json!({ "error": "pinata_network_error", "message": message }),
+            ),
+
             AppError::DraftNotReady => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "Draft not ready",
@@ -532,6 +568,40 @@ mod tests {
         let err = AppError::RateLimited;
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[test]
+    fn test_pinata_auth_error_returns_401() {
+        let err = AppError::PinataAuthError {
+            message: "Invalid JWT".to_string(),
+        };
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_pinata_rate_limit_error_returns_429() {
+        let err = AppError::PinataRateLimitError { retry_after: 60 };
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[test]
+    fn test_pinata_upload_error_returns_422() {
+        let err = AppError::PinataUploadError {
+            message: "File too large".to_string(),
+        };
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
+    fn test_pinata_network_error_returns_503() {
+        let err = AppError::PinataNetworkError {
+            message: "Connection timeout".to_string(),
+        };
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[test]

@@ -86,11 +86,8 @@ fn upload_to_ipfs_with_client(
     config: &Config,
     client: &dyn StorageHttpClient,
 ) -> Result<String, AppError> {
-    let endpoint = format!(
-        "{}/pinning/pinFileToIPFS",
-        config.ipfs_api_url.trim_end_matches('/')
-    );
-    let payload = client.post_ipfs(&endpoint, &config.ipfs_jwt, data)?;
+    let endpoint = "https://uploads.pinata.cloud/v3/files";
+    let payload = client.post_ipfs(endpoint, &config.pinata_jwt, data)?;
 
     let cid =
         extract_uri_id(&payload, &["IpfsHash", "cid", "Hash"]).ok_or(AppError::UploadFailed)?;
@@ -283,8 +280,8 @@ mod tests {
                     decimals: 6,
                 },
             },
-            ipfs_api_url: "https://api.pinata.cloud".to_string(),
-            ipfs_jwt: "ipfs_jwt".to_string(),
+            pinata_jwt: "pinata_jwt".to_string(),
+            pinata_gateway_domain: "gateway.pinata.cloud".to_string(),
             arweave_wallet_path,
             server_port: 8080,
             server_host: "0.0.0.0".to_string(),

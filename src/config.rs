@@ -98,8 +98,8 @@ pub struct Config {
     pub stablecoin_registry: StablecoinRegistry,
 
     // ===== STORAGE =====
-    pub ipfs_api_url: String,
-    pub ipfs_jwt: String,
+    pub pinata_jwt: String,
+    pub pinata_gateway_domain: String,
     pub arweave_wallet_path: PathBuf,
 
     // ===== SERVER =====
@@ -259,9 +259,9 @@ impl Config {
             },
 
             // Storage
-            ipfs_api_url: std::env::var("IPFS_API_URL")
-                .unwrap_or_else(|_| "https://api.pinata.cloud".to_string()),
-            ipfs_jwt: std::env::var("IPFS_JWT").expect("IPFS_JWT is required"),
+            pinata_jwt: std::env::var("PINATA_JWT").expect("PINATA_JWT is required"),
+            pinata_gateway_domain: std::env::var("PINATA_GATEWAY_DOMAIN")
+                .unwrap_or_else(|_| "gateway.pinata.cloud".to_string()),
             arweave_wallet_path: PathBuf::from(
                 std::env::var("ARWEAVE_WALLET_PATH")
                     .unwrap_or_else(|_| "./arweave-wallet.json".to_string()),
