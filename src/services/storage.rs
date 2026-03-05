@@ -31,19 +31,49 @@ impl StorageHttpClient for ReqwestStorageHttpClient {
         Self::run_async(async move {
             let client = Client::new();
             let part = multipart::Part::bytes(data.to_vec()).file_name("document.bin");
-            let form = multipart::Form::new().part("file", part);
+            let form = multipart::Form::new()
+                .part("file", part)
+                .text("network", "public");
 
             let request = client.post(url).bearer_auth(bearer_token).multipart(form);
 
-            let response = request.send().await.map_err(|_| AppError::UploadFailed)?;
-            if !response.status().is_success() {
-                return Err(AppError::UploadFailed);
+            let response = request.send().await.map_err(|e| {
+                tracing::error!("Pinata network error: {}", e);
+                AppError::PinataNetworkError {
+                    message: format!("Failed to connect to Pinata: {}", e),
+                }
+            })?;
+
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+
+            if status.is_success() {
+                return serde_json::from_str(&body).map_err(|e| {
+                    tracing::error!("Failed to parse Pinata response: {}", e);
+                    AppError::PinataUploadError {
+                        message: "Invalid response from Pinata".to_string(),
+                    }
+                });
             }
 
-            response
-                .json::<Value>()
-                .await
-                .map_err(|_| AppError::UploadFailed)
+            // Map HTTP errors to specific Pinata error types
+            tracing::error!("Pinata upload failed: HTTP {} - {}", status, body);
+
+            match status.as_u16() {
+                401 => Err(AppError::PinataAuthError {
+                    message: "Invalid JWT token".to_string(),
+                }),
+                429 => {
+                    let retry_after = 60; // Default retry after 60 seconds
+                    Err(AppError::PinataRateLimitError { retry_after })
+                }
+                400 | 422 => Err(AppError::PinataUploadError {
+                    message: format!("Upload rejected: {}", body),
+                }),
+                _ => Err(AppError::PinataNetworkError {
+                    message: format!("HTTP {}: {}", status, body),
+                }),
+            }
         })
     }
 
@@ -89,9 +119,20 @@ fn upload_to_ipfs_with_client(
     let endpoint = "https://uploads.pinata.cloud/v3/files";
     let payload = client.post_ipfs(endpoint, &config.pinata_jwt, data)?;
 
-    let cid =
-        extract_uri_id(&payload, &["IpfsHash", "cid", "Hash"]).ok_or(AppError::UploadFailed)?;
+    let cid = payload
+        .get("data")
+        .and_then(|d| d.get("cid"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::PinataUploadError {
+            message: "Missing CID in response".to_string(),
+        })?;
+
     Ok(format!("ipfs://{cid}"))
+}
+
+pub fn get_ipfs_gateway_url(cid: &str, config: &Config) -> String {
+    let clean_cid = cid.strip_prefix("ipfs://").unwrap_or(cid);
+    format!("https://{}/ipfs/{}", config.pinata_gateway_domain, clean_cid)
 }
 
 fn upload_to_arweave_with_client(
@@ -293,7 +334,13 @@ mod tests {
         let wallet_path = create_wallet_file(br#"{"kty":"RSA"}"#);
         let config = test_config(wallet_path.clone());
         let mock = MockStorageHttpClient::new(
-            vec![Ok(serde_json::json!({ "IpfsHash": "bafy123" }))],
+            vec![Ok(serde_json::json!({
+                "data": {
+                    "cid": "bafy123",
+                    "id": "test-file-id",
+                    "size": 5
+                }
+            }))],
             vec![],
         );
 
@@ -375,5 +422,20 @@ mod tests {
 
         assert!(matches!(result, Err(AppError::InternalError)));
         assert_eq!(mock.arweave_call_count(), 0);
+    }
+
+    #[test]
+    fn test_get_ipfs_gateway_url() {
+        let wallet_path = create_wallet_file(br#"{"kty":"RSA"}"#);
+        let config = test_config(wallet_path.clone());
+        let _ = fs::remove_file(wallet_path);
+
+        let cid = "bafy123";
+        let url = get_ipfs_gateway_url(cid, &config);
+        assert_eq!(url, "https://gateway.pinata.cloud/ipfs/bafy123");
+
+        let cid_with_prefix = "ipfs://bafy456";
+        let url_with_prefix = get_ipfs_gateway_url(cid_with_prefix, &config);
+        assert_eq!(url_with_prefix, "https://gateway.pinata.cloud/ipfs/bafy456");
     }
 }
