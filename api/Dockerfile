@@ -50,14 +50,14 @@ COPY .sqlx ./.sqlx
 COPY migrations ./migrations
 
 # Clean up dummy build artifacts to avoid symbol conflicts
-RUN rm -rf target/release/pactum-backend* target/release/deps/pactum_backend* target/release/.fingerprint/pactum-backend* 2>/dev/null || true
+RUN rm -rf target/release/pactum-codex* target/release/deps/pactum_backend* target/release/.fingerprint/pactum-codex* 2>/dev/null || true
 
 # Build release binary (disable LTO to avoid symbol conflicts with solana-program)
 ENV CARGO_PROFILE_RELEASE_LTO=false
-RUN cargo build --release --bin pactum-backend
+RUN cargo build --release --bin pactum-codex
 
 # Strip binary to reduce size
-RUN strip target/release/pactum-backend
+RUN strip target/release/pactum-codex
 
 # =============================================================================
 # Stage 3: Runtime
@@ -81,7 +81,7 @@ WORKDIR /app
 RUN chown pactum:pactum /app
 
 # Copy binary from builder stage
-COPY --from=builder --chown=pactum:pactum /app/target/release/pactum-backend /usr/local/bin/pactum-backend
+COPY --from=builder --chown=pactum:pactum /app/target/release/pactum-codex /usr/local/bin/pactum-codex
 
 # Switch to non-root user
 USER 10001
@@ -92,7 +92,7 @@ EXPOSE 8080
 # Health check endpoint
 # The backend should implement a /health endpoint that returns 200 OK
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD ["/usr/local/bin/pactum-backend", "--health-check"] || exit 1
+    CMD ["/usr/local/bin/pactum-codex", "--health-check"] || exit 1
 
 # Run the application
-ENTRYPOINT ["/usr/local/bin/pactum-backend"]
+ENTRYPOINT ["/usr/local/bin/pactum-codex"]

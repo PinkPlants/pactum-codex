@@ -82,7 +82,7 @@ The Pactum backend is an Axum-based HTTP + WebSocket server. It acts as a **UX c
 ## 3. Project Structure
 
 ```
-pactum-backend/
+pactum-codex/
 ├── Cargo.toml
 ├── Cargo.lock
 ├── .env.example
@@ -1988,7 +1988,7 @@ pub fn validate_keypair_pubkeys(state: &AppState) {
 | **HashiCorp Vault** | AppRole auth; secret fetched at startup; held in memory only | Production VPS / self-hosted |
 | **Docker secrets** | `docker secret create`; mounted at `/run/secrets/`; not in env | Docker Swarm / Compose |
 | **Cloud secrets manager** | AWS Secrets Manager / GCP Secret Manager; IAM role auth | Cloud-hosted |
-| **age-encrypted file** | `age -d keypair.age \| ./pactum-backend --keypair-stdin` | Dev / small deployments |
+| **age-encrypted file** | `age -d keypair.age \| ./pactum-codex --keypair-stdin` | Dev / small deployments |
 
 **Never:**
 - Store raw base58 private key in `.env` or environment variables
@@ -2442,10 +2442,10 @@ RUN touch src/main.rs && cargo build --release
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/pactum-backend /usr/local/bin/pactum-backend
+COPY --from=builder /app/target/release/pactum-codex /usr/local/bin/pactum-codex
 
 EXPOSE 8080
-CMD ["pactum-backend"]
+CMD ["pactum-codex"]
 ```
 
 ---
@@ -2454,7 +2454,7 @@ CMD ["pactum-backend"]
 
 ```toml
 [package]
-name    = "pactum-backend"
+name    = "pactum-codex"
 version = "0.1.0"
 edition = "2021"
 
