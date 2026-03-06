@@ -90,16 +90,10 @@ pactum-codex/
 ├── api/
 │   └── Dockerfile
 ├── migrations/
-│   ├── 001_user_accounts.sql
-│   ├── 002_auth_wallet.sql
-│   ├── 003_auth_oauth.sql
-│   ├── 004_user_contacts.sql
-│   ├── 005_agreement_parties.sql
-│   ├── 006_notification_queue.sql
-│   ├── 007_agreement_drafts.sql
-│   ├── 008_party_invitations.sql
-│   ├── 009_agreement_payments.sql
-│   └── 010_user_agreement_counts.sql
+│   ├── 20240306120000_core_users.sql          -- User accounts, auth, contacts, tokens
+│   ├── 20240306120001_agreements.sql          -- Agreement-party relationships
+│   ├── 20240306120002_drafts_and_payments.sql -- Drafts, payments, user counts
+│   └── 20240306120003_workflow.sql            -- Invitations, notifications
 └── src/
     ├── main.rs
     ├── config.rs
