@@ -1,4 +1,5 @@
--- One row per (party, agreement) pair — the primary reason SQL exists
+-- Agreement parties table
+-- Tracks the relationship between parties and agreements
 CREATE TABLE agreement_parties (
     party_pubkey   TEXT    NOT NULL,
     agreement_pda  TEXT    NOT NULL,
@@ -11,6 +12,6 @@ CREATE TABLE agreement_parties (
     PRIMARY KEY (party_pubkey, agreement_pda)
 );
 
-CREATE INDEX idx_agreement_parties_pubkey  ON agreement_parties(party_pubkey);
-CREATE INDEX idx_agreement_parties_status  ON agreement_parties(party_pubkey, status);
-CREATE INDEX idx_agreement_parties_pda     ON agreement_parties(agreement_pda);
+CREATE INDEX idx_agreement_parties_pubkey ON agreement_parties(party_pubkey);
+CREATE INDEX idx_agreement_parties_status ON agreement_parties(party_pubkey, status);
+CREATE INDEX idx_agreement_parties_pda ON agreement_parties(agreement_pda);
