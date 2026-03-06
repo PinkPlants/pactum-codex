@@ -5,6 +5,21 @@
       "source": "zhanghandong/rust-skills",
       "sourceType": "github",
       "computedHash": "0742312a0de5eb6bd84e093c1815b1db98126130b92713ea5fc2cf902338aa3b"
+    },
+    "rust-async-patterns": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "computedHash": "5fe69efa702aabf6dcdf939d07bf6e5920594de3215c3902414bef26e5c74c0c"
+    },
+    "rust-best-practices": {
+      "source": "apollographql/skills",
+      "sourceType": "github",
+      "computedHash": "ba11ae333ab71e30dd83de34d5f5cfa23ed3ee782618215f7fb69b749d63762d"
+    },
+    "rust-engineer": {
+      "source": "jeffallan/claude-skills",
+      "sourceType": "github",
+      "computedHash": "d88f327bdb51590405f90c0e440ab6a7ccbba6f41eae3525196455b3ecbc250d"
     }
   }
 }

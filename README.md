@@ -153,7 +153,7 @@ docker pull univer5al/pactum-codex-migrations:latest
 
 ```bash
 git clone <repo>
-cd pactum-backend
+cd pactum-codex
 cp .env.example .env
 # Edit .env with your values (RPC URLs, OAuth credentials, etc.)
 ```
@@ -233,7 +233,7 @@ For local development without Docker.
 
 ```bash
 git clone <repo>
-cd pactum-backend
+cd pactum-codex
 cp .env.example .env
 # Edit .env with your values
 ```

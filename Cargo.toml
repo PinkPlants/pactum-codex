@@ -1,5 +1,5 @@
 [package]
-name    = "pactum-backend"
+name    = "pactum-codex"
 version = "0.1.0"
 edition = "2021"
 
