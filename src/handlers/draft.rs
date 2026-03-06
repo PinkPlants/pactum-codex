@@ -275,10 +275,44 @@ pub async fn submit_draft(
 
     let agreement_id_bytes: [u8; 16] = *agreement_id.as_bytes();
     let (agreement_pda, _) = derive_agreement_pda(&creator_pubkey, &agreement_id_bytes);
+    let agreement_pda_str = agreement_pda.to_string();
+
+    // Persist agreement_pda to the draft record
+    sqlx::query(
+        "UPDATE agreement_drafts
+         SET agreement_pda = $1,
+             agreement_id = $2
+         WHERE id = $3",
+    )
+    .bind(&agreement_pda_str)
+    .bind(&agreement_id_bytes.as_slice())
+    .bind(draft_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to update draft with agreement_pda: {}", e);
+        AppError::InternalError
+    })?;
+
+    // Also update the payment record with the agreement_pda
+    sqlx::query(
+        "UPDATE agreement_payments
+         SET agreement_pda = $1
+         WHERE draft_id = $2
+           AND status = 'confirmed'",
+    )
+    .bind(&agreement_pda_str)
+    .bind(draft_id)
+    .execute(&state.db)
+    .await
+    .map_err(|e| {
+        tracing::error!("Failed to update payment with agreement_pda: {}", e);
+        AppError::InternalError
+    })?;
 
     Ok(Json(SubmitDraftResponse {
         transaction,
-        agreement_pda: agreement_pda.to_string(),
+        agreement_pda: agreement_pda_str,
     }))
 }
 
