@@ -2,15 +2,17 @@
 # Production-ready setup with PostgreSQL, secrets management, and health checks
 #
 # Setup Instructions:
-# 1. Create required Docker secrets first:
-#    echo "$(openssl rand -base64 32)" | docker secret create db_password -
-#    docker secret create vault_keypair /path/to/vault_keypair.json
-#    docker secret create treasury_keypair /path/to/treasury_keypair.json
+# 1. Create required secret files first (used by Compose secrets):
+#    mkdir -p api/secrets
+#    openssl rand -base64 32 > api/secrets/db_password.txt
+#    cp /path/to/vault_keypair.json api/secrets/vault_keypair.json
+#    cp /path/to/treasury_keypair.json api/secrets/treasury_keypair.json
+#    cp /path/to/arweave-wallet.json api/secrets/arweave_wallet.json
 #
 # 2. Copy .env.example to .env and fill in your values
 #
 # 3. Deploy:
-#    docker-compose up -d
+#    docker compose up -d
 
 version: "3.8"
 
@@ -19,8 +21,10 @@ services:
   # API Service - Pactum Backend
   # ===========================================================================
   api:
+    image: ${PACTUM_API_IMAGE:-univer5al/pactum-codex:latest}
+    pull_policy: ${PACTUM_API_PULL_POLICY:-missing}
     build:
-      context: ..
+      context: .
       dockerfile: api/Dockerfile
       target: runtime
     container_name: pactum-api
@@ -150,8 +154,10 @@ services:
   # Database Migrations
   # ===========================================================================
   migrations:
+    image: ${PACTUM_MIGRATIONS_IMAGE:-univer5al/pactum-codex-migrations:latest}
+    pull_policy: ${PACTUM_MIGRATIONS_PULL_POLICY:-missing}
     build:
-      context: ..
+      context: .
       dockerfile: api/Dockerfile
       target: builder
     container_name: pactum-migrations
@@ -234,19 +240,20 @@ networks:
 # =============================================================================
 # Secrets
 # =============================================================================
-# These must be created before running docker-compose:
+# These secret files must exist before running docker compose:
 #
-# echo "$(openssl rand -base64 32)" | docker secret create db_password -
-# docker secret create vault_keypair /path/to/vault_keypair.json
-# docker secret create treasury_keypair /path/to/treasury_keypair.json
-# docker secret create arweave_wallet /path/to/arweave-wallet.json
+# mkdir -p api/secrets
+# openssl rand -base64 32 > api/secrets/db_password.txt
+# cp /path/to/vault_keypair.json api/secrets/vault_keypair.json
+# cp /path/to/treasury_keypair.json api/secrets/treasury_keypair.json
+# cp /path/to/arweave-wallet.json api/secrets/arweave_wallet.json
 #
 secrets:
   db_password:
-    external: true
+    file: ${DB_PASSWORD_FILE:-./api/secrets/db_password.txt}
   vault_keypair:
-    external: true
+    file: ${VAULT_KEYPAIR_FILE:-./api/secrets/vault_keypair.json}
   treasury_keypair:
-    external: true
+    file: ${TREASURY_KEYPAIR_FILE:-./api/secrets/treasury_keypair.json}
   arweave_wallet:
-    external: true
+    file: ${ARWEAVE_WALLET_FILE:-./api/secrets/arweave_wallet.json}

@@ -136,16 +136,17 @@ Choose your preferred deployment method:
 
 ### Option A: Docker (Recommended)
 
-The fastest way to get started with all dependencies pre-configured.
+The fastest way to run Pactum with PostgreSQL and migrations pre-wired.
 
 #### Prerequisites
 
 - Docker 20.10+
-- Docker Compose 2.0+
+- Docker Compose plugin (`docker compose`)
 
-**Note**: A pre-built image is available on DockerHub:
+Default images are hosted on DockerHub:
 ```bash
 docker pull univer5al/pactum-codex:latest
+docker pull univer5al/pactum-codex-migrations:latest
 ```
 
 #### 1. Clone and Configure
@@ -157,33 +158,62 @@ cp .env.example .env
 # Edit .env with your values (RPC URLs, OAuth credentials, etc.)
 ```
 
-#### 2. Create Docker Secrets
+#### 2. Create Secret Files for Compose
 
 ```bash
-# Database password
-echo "$(openssl rand -base64 32)" | docker secret create db_password -
+mkdir -p api/secrets
 
-# Platform keypairs (generate if you don't have them)
+# Database password file
+openssl rand -base64 32 > api/secrets/db_password.txt
+
+# Platform keypairs (generate if needed)
 solana-keygen new -o vault_keypair.json
 solana-keygen new -o treasury_keypair.json
-docker secret create vault_keypair ./vault_keypair.json
-docker secret create treasury_keypair ./treasury_keypair.json
+cp ./vault_keypair.json api/secrets/vault_keypair.json
+cp ./treasury_keypair.json api/secrets/treasury_keypair.json
 
-# Optional: Arweave wallet for document storage
-docker secret create arweave_wallet ./arweave-wallet.json
+# Arweave wallet file (required by compose defaults)
+cp ./arweave-wallet.json api/secrets/arweave_wallet.json
 ```
 
-#### 3. Run
+#### 3. Build and Run with Host Compose
 
 ```bash
-# Production mode
-docker-compose up -d
+# Build local images from source
+docker compose build api migrations
 
-# Development mode (with hot reload)
-docker-compose -f docker-compose.yml -f api/docker-compose.dev.yml up
+# Run in detached mode on host
+docker compose up -d
 ```
 
 The API will be available at `http://localhost:8080`.
+
+#### 4. Development Override (Hot Reload)
+
+```bash
+docker compose -f docker-compose.yml -f api/docker-compose.dev.yml up api
+```
+
+#### 5. Run from Remote DockerHub Images
+
+```bash
+# Optional: pin versions
+export PACTUM_API_IMAGE=univer5al/pactum-codex:latest
+export PACTUM_MIGRATIONS_IMAGE=univer5al/pactum-codex-migrations:latest
+
+# Force pulls, then start without building
+export PACTUM_API_PULL_POLICY=always
+export PACTUM_MIGRATIONS_PULL_POLICY=always
+docker compose pull --include-deps
+docker compose up -d --no-build
+```
+
+To switch back to local builds, unset pull policy and rebuild:
+
+```bash
+unset PACTUM_API_PULL_POLICY PACTUM_MIGRATIONS_PULL_POLICY
+docker compose build api migrations
+```
 
 See [`api/README.md`](api/README.md) for detailed Docker instructions.
 
@@ -360,12 +390,21 @@ See `.env.example` for all options:
 | `PLATFORM_VAULT_KEYPAIR_PATH` | Path to vault keypair |
 | `PLATFORM_TREASURY_KEYPAIR_PATH` | Path to treasury keypair |
 | `STABLECOIN_USDC_MINT` | USDC mint address |
+| `STABLECOIN_USDC_ATA` | Platform USDC associated token account |
 | `STABLECOIN_USDT_MINT` | USDT mint address |
+| `STABLECOIN_USDT_ATA` | Platform USDT associated token account |
 | `STABLECOIN_PYUSD_MINT` | PYUSD mint address |
-| `IPFS_API_URL` / `IPFS_JWT` | IPFS credentials |
+| `STABLECOIN_PYUSD_ATA` | Platform PYUSD associated token account |
+| `PINATA_JWT` | Pinata IPFS JWT for uploads |
+| `PINATA_GATEWAY_DOMAIN` | Pinata gateway domain for file access |
+| `ARWEAVE_WALLET_PATH` | Path to Arweave wallet keypair |
 | `RESEND_API_KEY` | Email service API key |
-| `PLATFORM_VAULT_KEYPAIR_PATH` | Path to vault keypair file |
-| `PLATFORM_TREASURY_KEYPAIR_PATH` | Path to treasury keypair file |
+| `EMAIL_FROM` | Sender email address for notifications |
+| `INVITE_BASE_URL` | Base URL for invitation links |
+| `PLATFORM_FEE_USD_CENTS` | Per-agreement fee in cents |
+| `PLATFORM_FEE_FREE_TIER` | Lifetime free agreements per user |
+| `VAULT_MIN_SOL_ALERT` | Alert threshold for vault SOL balance |
+| `TREASURY_SWEEP_DEST` | Cold wallet address for treasury sweeps |
 
 ## Security Model
 
@@ -397,6 +436,43 @@ The Dockerfile has been optimized for reliable builds:
 - **Resource limits**: CPU and memory constraints prevent resource exhaustion
 - **Health checks**: Automatic container restart on failure
 
+### Docker Image Usage and DockerHub Publishing
+
+Use this sequence to publish both runtime and migrations images:
+
+```bash
+# 1) Authenticate
+docker login
+
+# 2) Build local images with compose tags
+docker compose build api migrations
+
+# 3) Tag release versions (example)
+export VERSION=v0.1.0
+docker tag univer5al/pactum-codex:latest univer5al/pactum-codex:${VERSION}
+docker tag univer5al/pactum-codex-migrations:latest univer5al/pactum-codex-migrations:${VERSION}
+
+# 4) Push latest and version tags
+docker push univer5al/pactum-codex:latest
+docker push univer5al/pactum-codex:${VERSION}
+docker push univer5al/pactum-codex-migrations:latest
+docker push univer5al/pactum-codex-migrations:${VERSION}
+```
+
+Optional multi-arch publishing with Buildx:
+
+```bash
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -f api/Dockerfile --target runtime \
+  -t univer5al/pactum-codex:latest \
+  --push .
+
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -f api/Dockerfile --target builder \
+  -t univer5al/pactum-codex-migrations:latest \
+  --push .
+```
+
 ## Development
 
 ### Standard Development
@@ -422,20 +498,20 @@ cargo test services::solana::tests
 
 ```bash
 # Start with hot reload
-docker-compose -f docker-compose.yml -f api/docker-compose.dev.yml up
+docker compose -f docker-compose.yml -f api/docker-compose.dev.yml up
 
 # View logs
-docker-compose logs -f api
+docker compose logs -f api
 
 # Rebuild after dependency changes
-docker-compose build --no-cache
+docker compose build --no-cache
 
 # Reset everything (including database)
-docker-compose down -v
-docker-compose up -d
+docker compose down -v
+docker compose up -d
 
 # Run database migrations manually
-docker-compose run --rm migrations
+docker compose run --rm migrations
 
 # Access PostgreSQL
 docker exec -it pactum-postgres psql -U pactum -d pactum
@@ -447,8 +523,12 @@ docker exec -it pactum-postgres psql -U pactum -d pactum
 # Deploy with Docker Swarm
 docker stack deploy -c docker-compose.yml pactum
 
-# Or with docker-compose directly
-docker-compose -f docker-compose.yml up -d
+# Or run directly on a host
+docker compose -f docker-compose.yml up -d
+
+# Or force remote image mode on host
+PACTUM_API_PULL_POLICY=always PACTUM_MIGRATIONS_PULL_POLICY=always \
+docker compose -f docker-compose.yml up -d --no-build
 ```
 
 ## License
