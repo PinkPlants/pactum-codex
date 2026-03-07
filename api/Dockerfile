@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.4
 # Multi-stage Dockerfile for Pactum Backend
 # Follows security best practices: non-root user, minimal attack surface, secret management
 
@@ -36,6 +35,8 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
+
+RUN cargo install sqlx-cli --no-default-features --features native-tls,postgres
 
 # Copy cached dependencies from deps stage
 COPY --from=deps /app/target ./target

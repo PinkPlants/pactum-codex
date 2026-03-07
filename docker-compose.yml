@@ -14,8 +14,6 @@
 # 3. Deploy:
 #    docker compose up -d
 
-version: "3.8"
-
 services:
   # ===========================================================================
   # API Service - Pactum Backend
@@ -95,8 +93,8 @@ services:
       STABLECOIN_PYUSD_ATA: ${STABLECOIN_PYUSD_ATA}
       
       # Storage
-      IPFS_API_URL: ${IPFS_API_URL}
-      IPFS_JWT: ${IPFS_JWT}
+      PINATA_GATEWAY_DOMAIN: ${PINATA_GATEWAY_DOMAIN}
+      PINATA_JWT: ${PINATA_JWT}
       ARWEAVE_WALLET_PATH: /run/secrets/arweave_wallet
       
       # Server

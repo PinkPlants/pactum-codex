@@ -114,9 +114,26 @@ impl Config {
         // Load .env file if present
         dotenvy::dotenv().ok();
 
+        // When PGPASSWORD_FILE is set (Docker secrets), read the password from
+        // that file and inject it into DATABASE_URL before connecting.
+        let database_url = {
+            let base_url = std::env::var("DATABASE_URL").expect("DATABASE_URL is required");
+
+            if let Ok(pw_file) = std::env::var("PGPASSWORD_FILE") {
+                let password = std::fs::read_to_string(&pw_file)
+                    .unwrap_or_else(|e| panic!("Cannot read PGPASSWORD_FILE '{pw_file}': {e}"))
+                    .trim()
+                    .to_string();
+
+                inject_password_into_url(&base_url, &password)
+            } else {
+                base_url
+            }
+        };
+
         let config = Config {
             // Database
-            database_url: std::env::var("DATABASE_URL").expect("DATABASE_URL is required"),
+            database_url,
 
             // Solana
             solana_rpc_url: std::env::var("SOLANA_RPC_URL").expect("SOLANA_RPC_URL is required"),
@@ -279,6 +296,21 @@ impl Config {
     }
 }
 
+/// Inject a password into a PostgreSQL URL: `postgres://user@host` → `postgres://user:pw@host`
+fn inject_password_into_url(url: &str, password: &str) -> String {
+    let scheme_end = url.find("://").expect("DATABASE_URL must contain '://'") + 3;
+    let rest = &url[scheme_end..];
+
+    match rest.find('@') {
+        Some(at_pos) => {
+            let user = &rest[..at_pos];
+            let after_at = &rest[at_pos..];
+            format!("{}{}:{}{}", &url[..scheme_end], user, password, after_at)
+        }
+        None => panic!("DATABASE_URL must contain '@' (e.g. postgres://user@host/db)"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,5 +343,27 @@ mod tests {
         assert!(registry.resolve("pyusd").is_some());
         assert!(registry.resolve("invalid").is_none());
         assert_eq!(registry.resolve("usdc").unwrap().symbol, "usdc");
+    }
+
+    #[test]
+    fn test_inject_password_into_url() {
+        assert_eq!(
+            inject_password_into_url("postgres://pactum@localhost:5432/pactum", "s3cret"),
+            "postgres://pactum:s3cret@localhost:5432/pactum"
+        );
+    }
+
+    #[test]
+    fn test_inject_password_preserves_existing_path() {
+        assert_eq!(
+            inject_password_into_url("postgres://user@host:5432/mydb?sslmode=require", "pw"),
+            "postgres://user:pw@host:5432/mydb?sslmode=require"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "must contain '@'")]
+    fn test_inject_password_panics_without_at() {
+        inject_password_into_url("postgres://localhost/db", "pw");
     }
 }
