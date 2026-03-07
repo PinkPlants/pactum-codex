@@ -189,23 +189,189 @@ pub fn build_ws_event(job: &NotificationJob) -> WsEvent {
     }
 }
 
-/// Email dispatch skeleton (using resend-rs)
-/// This is a skeleton implementation - full email templates to be added later
+/// Email dispatch using Resend API
 pub async fn send_email(
-    _resend_api_key: &str,
+    resend_api_key: &str,
+    from_email: &str,
     recipient_email: &str,
     event: &NotificationEvent,
     agreement_pda: Option<&str>,
 ) -> Result<(), AppError> {
-    // TODO: Implement full email dispatch with resend-rs
-    // For now, just log the email send intent
-    tracing::info!(
-        "Would send email to {} - Subject: {} - PDA: {:?}",
-        recipient_email,
-        event.subject(),
-        agreement_pda
-    );
-    Ok(())
+    let subject = event.subject();
+    let html_body = render_email_html(event, agreement_pda);
+    let text_body = render_email_text(event, agreement_pda);
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post("https://api.resend.com/emails")
+        .header("Authorization", format!("Bearer {resend_api_key}"))
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "from": from_email,
+            "to": recipient_email,
+            "subject": subject,
+            "html": html_body,
+            "text": text_body,
+        }))
+        .send()
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to send email via Resend: {e}");
+            AppError::InternalError
+        })?;
+
+    if response.status().is_success() {
+        tracing::info!("Email sent to {recipient_email} - Subject: {subject}");
+        Ok(())
+    } else {
+        let status = response.status();
+        let error_text = response.text().await.unwrap_or_default();
+        tracing::error!("Resend API error: {status} - {error_text}");
+        Err(AppError::InternalError)
+    }
+}
+
+/// Render HTML email body for event
+fn render_email_html(event: &NotificationEvent, agreement_pda: Option<&str>) -> String {
+    let pda_display = agreement_pda.unwrap_or("N/A");
+    let subject = event.subject();
+    let main_content = match event {
+        NotificationEvent::AgreementCreated => format!(
+            r#"<p>You've been invited to sign an agreement.</p>
+            <p>Agreement ID: <code>{}</code></p>
+            <p><a href="https://app.pactum.app/agreement/{}" style="background:#4F46E5;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;">View Agreement</a></p>"#,
+            pda_display, pda_display
+        ),
+        NotificationEvent::Signed => format!(
+            r#"<p>A party has signed the agreement.</p>
+            <p>Agreement ID: <code>{}</code></p>"#,
+            pda_display
+        ),
+        NotificationEvent::Completed => format!(
+            r#"<p>Congratulations! The agreement has been fully signed and the credential has been minted.</p>
+            <p>Agreement ID: <code>{}</code></p>
+            <p><a href="https://app.pactum.app/agreement/{}" style="background:#10B981;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;">View Credential</a></p>"#,
+            pda_display, pda_display
+        ),
+        NotificationEvent::Cancelled => format!(
+            r#"<p>The agreement has been cancelled.</p>
+            <p>Agreement ID: <code>{}</code></p>"#,
+            pda_display
+        ),
+        NotificationEvent::Expired => format!(
+            r#"<p>The agreement has expired unsigned.</p>
+            <p>Agreement ID: <code>{}</code></p>"#,
+            pda_display
+        ),
+        NotificationEvent::RevokeVote => format!(
+            r#"<p>A party has voted to revoke the credential.</p>
+            <p>Agreement ID: <code>{}</code></p>"#,
+            pda_display
+        ),
+        NotificationEvent::Revoked => format!(
+            r#"<p>The credential has been revoked by unanimous consent.</p>
+            <p>Agreement ID: <code>{}</code></p>"#,
+            pda_display
+        ),
+        NotificationEvent::DraftReadyToSubmit => format!(
+            r#"<p>All parties have joined your agreement draft and it's ready to submit.</p>
+            <p><a href="https://app.pactum.app/drafts" style="background:#4F46E5;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;">Submit Agreement</a></p>"#
+        ),
+        NotificationEvent::InvitationExpired => format!(
+            r#"<p>A party hasn't responded to your agreement invitation within the time limit.</p>
+            <p>You can resend the invitation or discard the draft.</p>"#
+        ),
+        NotificationEvent::InvitationReminder => format!(
+            r#"<p>This is a reminder that you've been invited to sign an agreement.</p>
+            <p>Agreement ID: <code>{}</code></p>"#,
+            pda_display
+        ),
+        NotificationEvent::PaymentConfirmed => format!(
+            r#"<p>Your payment has been confirmed and your agreement is ready to submit.</p>
+            <p><a href="https://app.pactum.app/drafts" style="background:#4F46E5;color:white;padding:12px 24px;text-decoration:none;border-radius:6px;">Submit Agreement</a></p>"#
+        ),
+        NotificationEvent::RefundInitiated => format!(
+            r#"<p>Your refund is being processed.</p>
+            <p>This may take a few minutes to complete.</p>"#
+        ),
+        NotificationEvent::RefundCompleted => format!(
+            r#"<p>Your refund has been sent to your wallet.</p>
+            <p>The funds should appear in your account shortly.</p>"#
+        ),
+    };
+
+    format!(
+        r#"<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{}</title>
+</head>
+<body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.5;color:#1f2937;max-width:600px;margin:0 auto;padding:24px;">
+    <div style="background:#f9fafb;padding:24px;border-radius:8px;margin-bottom:24px;">
+        <h1 style="color:#111827;margin:0 0 16px 0;font-size:24px;">Pactum</h1>
+        <h2 style="color:#4b5563;margin:0;font-size:18px;font-weight:normal;">{}</h2>
+    </div>
+    <div style="background:white;padding:24px;border-radius:8px;border:1px solid #e5e7eb;">
+        {}
+    </div>
+    <div style="margin-top:24px;padding-top:24px;border-top:1px solid #e5e7eb;color:#6b7280;font-size:14px;">
+        <p>This is an automated message from Pactum. Please do not reply to this email.</p>
+    </div>
+</body>
+</html>"#,
+        subject, subject, main_content
+    )
+}
+
+/// Render plain text email body for event
+fn render_email_text(event: &NotificationEvent, agreement_pda: Option<&str>) -> String {
+    let pda_display = agreement_pda.unwrap_or("N/A");
+    match event {
+        NotificationEvent::AgreementCreated => format!(
+            "You've been invited to sign an agreement.\n\nAgreement ID: {}\n\nView at: https://app.pactum.app/agreement/{}",
+            pda_display, pda_display
+        ),
+        NotificationEvent::Signed => format!(
+            "A party has signed the agreement.\n\nAgreement ID: {}",
+            pda_display
+        ),
+        NotificationEvent::Completed => format!(
+            "Congratulations! The agreement has been fully signed and the credential has been minted.\n\nAgreement ID: {}\n\nView at: https://app.pactum.app/agreement/{}",
+            pda_display, pda_display
+        ),
+        NotificationEvent::Cancelled => format!(
+            "The agreement has been cancelled.\n\nAgreement ID: {}",
+            pda_display
+        ),
+        NotificationEvent::Expired => format!(
+            "The agreement has expired unsigned.\n\nAgreement ID: {}",
+            pda_display
+        ),
+        NotificationEvent::RevokeVote => format!(
+            "A party has voted to revoke the credential.\n\nAgreement ID: {}",
+            pda_display
+        ),
+        NotificationEvent::Revoked => format!(
+            "The credential has been revoked by unanimous consent.\n\nAgreement ID: {}",
+            pda_display
+        ),
+        NotificationEvent::DraftReadyToSubmit => 
+            "All parties have joined your agreement draft and it's ready to submit.\n\nSubmit at: https://app.pactum.app/drafts".to_string(),
+        NotificationEvent::InvitationExpired => 
+            "A party hasn't responded to your agreement invitation within the time limit.\n\nYou can resend the invitation or discard the draft.".to_string(),
+        NotificationEvent::InvitationReminder => format!(
+            "This is a reminder that you've been invited to sign an agreement.\n\nAgreement ID: {}",
+            pda_display
+        ),
+        NotificationEvent::PaymentConfirmed => 
+            "Your payment has been confirmed and your agreement is ready to submit.\n\nSubmit at: https://app.pactum.app/drafts".to_string(),
+        NotificationEvent::RefundInitiated => 
+            "Your refund is being processed.\n\nThis may take a few minutes to complete.".to_string(),
+        NotificationEvent::RefundCompleted => 
+            "Your refund has been sent to your wallet.\n\nThe funds should appear in your account shortly.".to_string(),
+    }
 }
 
 #[cfg(test)]
