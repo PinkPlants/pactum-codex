@@ -24,6 +24,7 @@ pub mod services {
     pub mod notification;
     pub mod refund;
     pub mod solana;
+    pub mod solana_logs;
     pub mod solana_pay;
     pub mod storage;
 }
