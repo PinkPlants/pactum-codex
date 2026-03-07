@@ -22,6 +22,7 @@ pub mod services {
     pub mod keypair_security;
     pub mod metadata;
     pub mod notification;
+    pub mod program_log;
     pub mod refund;
     pub mod solana;
     pub mod solana_logs;
