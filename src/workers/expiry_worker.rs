@@ -8,6 +8,7 @@
 //! signing windows are measured in days, a 5-minute scan interval introduces
 //! negligible delay while keeping gas costs proportional to actual expired agreements.
 
+use std::str::FromStr;
 use std::time::Duration;
 
 use crate::error::AppError;
@@ -190,17 +191,39 @@ async fn submit_expire_transaction(
     let transaction: solana_sdk::transaction::Transaction =
         bincode::deserialize(&tx_bytes).map_err(|_| AppError::InternalError)?;
 
-    // TODO: Submit the signed transaction
-    // The solana_client 3.x API has compatibility issues with Transaction type
-    // For now, log the transaction that would be submitted
+    let sig = submit_transaction_rpc(&state.config.solana_rpc_url, &transaction).await?;
+
     tracing::info!(
-        "expiry_worker: would submit expire transaction for agreement {} (signature: {})",
+        "expiry_worker: submitted expire transaction for agreement {} (signature: {})",
         agreement_pda,
-        transaction.signatures[0]
+        sig
     );
 
-    // Return a placeholder signature - in production this would be the actual tx signature
-    Ok(transaction.signatures[0].to_string())
+    Ok(sig.to_string())
+}
+
+async fn submit_transaction_rpc(
+    rpc_url: &str,
+    transaction: &solana_sdk::transaction::Transaction,
+) -> Result<solana_sdk::signature::Signature, crate::error::AppError> {
+    use base64::Engine;
+    use solana_client::rpc_client::RpcClient;
+    use solana_client::rpc_request::RpcRequest;
+    use solana_sdk::signature::Signature;
+
+    let serialized = bincode::serialize(transaction).map_err(|_| crate::error::AppError::InternalError)?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(serialized);
+    let rpc_url = rpc_url.to_string();
+
+    let sig_str: String = tokio::task::spawn_blocking(move || {
+        let rpc = RpcClient::new(rpc_url);
+        rpc.send(RpcRequest::SendTransaction, serde_json::json!([encoded, {"encoding": "base64", "skipPreflight": false, "preflightCommitment": "confirmed"}]))
+    })
+    .await
+    .map_err(|_| crate::error::AppError::InternalError)?
+    .map_err(|_| crate::error::AppError::SolanaRpcError)?;
+
+    Signature::from_str(&sig_str).map_err(|_| crate::error::AppError::InternalError)
 }
 
 #[cfg(test)]

@@ -1,6 +1,9 @@
 use crate::error::AppError;
 use crate::state::ProtectedKeypair;
+use base64::Engine;
 use solana_client::rpc_client::RpcClient;
+use solana_client::rpc_config::CommitmentConfig;
+use solana_client::rpc_request::RpcRequest;
 use solana_sdk::{pubkey::Pubkey, signer::Signer, transaction::Transaction};
 use std::str::FromStr;
 
@@ -24,7 +27,7 @@ pub fn calculate_refund_amount(
 ///
 /// Builds an SPL `transfer` instruction, signs with the treasury keypair, and sends+confirms.
 /// Returns the transaction signature on success.
-pub fn execute_refund(
+pub async fn execute_refund(
     rpc: &RpcClient,
     treasury: &ProtectedKeypair,
     creator_pubkey_str: &str,
@@ -32,15 +35,49 @@ pub fn execute_refund(
     amount: u64,
 ) -> Result<String, AppError> {
     let treasury_pubkey = treasury.0.pubkey();
-    let creator_pubkey =
-        Pubkey::from_str(creator_pubkey_str).map_err(|_| AppError::InternalError)?;
-    let token_mint = Pubkey::from_str(token_mint_str).map_err(|_| AppError::InternalError)?;
+    let creator_pubkey = Pubkey::from_str(creator_pubkey_str).map_err(|e| {
+        tracing::error!("refund: invalid creator pubkey '{}': {e}", creator_pubkey_str);
+        AppError::InternalError
+    })?;
+    let token_mint = Pubkey::from_str(token_mint_str).map_err(|e| {
+        tracing::error!("refund: invalid token mint '{}': {e}", token_mint_str);
+        AppError::InternalError
+    })?;
 
     // Derive ATAs
     let source_ata =
         spl_associated_token_account::get_associated_token_address(&treasury_pubkey, &token_mint);
     let destination_ata =
         spl_associated_token_account::get_associated_token_address(&creator_pubkey, &token_mint);
+    let rpc_url = rpc.url();
+
+    let rpc_url_for_destination_check = rpc_url.clone();
+    let destination_exists = tokio::task::spawn_blocking(move || {
+        RpcClient::new(rpc_url_for_destination_check)
+            .get_account_with_commitment(&destination_ata, CommitmentConfig::processed())
+            .map(|response| response.value.is_some())
+    })
+    .await
+    .map_err(|e| {
+        tracing::error!("refund: destination ATA check task join failure: {e}");
+        AppError::InternalError
+    })
+    .and_then(|result| {
+        result.map_err(|e| {
+            tracing::error!("refund: destination ATA check RPC failure: {e}");
+            AppError::SolanaRpcError
+        })
+    })?;
+
+    if !destination_exists {
+        tracing::warn!(
+            "refund: destination ATA missing for creator={}, mint={}, ata={}",
+            creator_pubkey,
+            token_mint,
+            destination_ata
+        );
+        return Err(AppError::NotFound);
+    }
 
     // Build SPL transfer instruction (treasury signs as owner of source ATA)
     let transfer_ix = spl_token::instruction::transfer(
@@ -53,22 +90,62 @@ pub fn execute_refund(
     )
     .map_err(|_| AppError::TransactionSigningFailed)?;
 
-    // Get recent blockhash
-    let recent_blockhash = rpc
-        .get_latest_blockhash()
-        .map_err(|_| AppError::SolanaRpcError)?;
+    let rpc_url_for_blockhash = rpc_url.clone();
+    let recent_blockhash =
+        tokio::task::spawn_blocking(move || RpcClient::new(rpc_url_for_blockhash).get_latest_blockhash())
+            .await
+            .map_err(|e| {
+                tracing::error!("refund: latest blockhash task join failure: {e}");
+                AppError::InternalError
+            })
+            .and_then(|result| {
+                result.map_err(|e| {
+                    tracing::error!("refund: latest blockhash RPC failure: {e}");
+                    AppError::SolanaRpcError
+                })
+            })?;
 
-    let _ = (
-        rpc,
-        treasury,
-        treasury_pubkey,
-        source_ata,
-        destination_ata,
-        amount,
+    let tx = Transaction::new_signed_with_payer(
+        &[transfer_ix],
+        Some(&treasury_pubkey),
+        &[&treasury.0],
         recent_blockhash,
-        transfer_ix,
     );
-    Ok("stub_signature".to_string())
+
+    let serialized_tx = bincode::serialize(&tx).map_err(|e| {
+        tracing::error!("refund: transaction serialization failure: {e}");
+        AppError::TransactionSigningFailed
+    })?;
+    let encoded_tx = base64::engine::general_purpose::STANDARD.encode(serialized_tx);
+
+    let rpc_url_for_submit = rpc_url;
+    let signature = tokio::task::spawn_blocking(move || {
+        RpcClient::new(rpc_url_for_submit).send::<String>(
+            RpcRequest::SendTransaction,
+            serde_json::json!([
+                encoded_tx,
+                {
+                    "encoding": "base64",
+                    "skipPreflight": false,
+                    "preflightCommitment": "confirmed",
+                    "maxRetries": 3
+                }
+            ]),
+        )
+    })
+        .await
+        .map_err(|e| {
+            tracing::error!("refund: submit transaction task join failure: {e}");
+            AppError::InternalError
+        })
+        .and_then(|result| {
+            result.map_err(|e| {
+                tracing::error!("refund: submit transaction RPC failure: {e}");
+                AppError::SolanaRpcError
+            })
+        })?;
+
+    Ok(signature)
 }
 
 #[cfg(test)]
