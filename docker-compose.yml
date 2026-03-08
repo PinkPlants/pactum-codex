@@ -163,7 +163,7 @@ services:
       sh -c "
         echo 'Waiting for PostgreSQL...' &&
         sleep 5 &&
-        cargo sqlx migrate run --database-url \"postgres://pactum:$$(cat /run/secrets/db_password)@postgres:5432/pactum\"
+        cargo sqlx migrate run --database-url \"postgres://pactum:$$(cat /run/secrets/db_password | tr -d '\\n')@postgres:5432/pactum\"
       "
     environment:
       DATABASE_URL: postgres://pactum@postgres:5432/pactum
