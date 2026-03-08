@@ -146,7 +146,6 @@ The fastest way to run Pactum with PostgreSQL and migrations pre-wired.
 Default images are hosted on DockerHub:
 ```bash
 docker pull univer5al/pactum-codex:latest
-docker pull univer5al/pactum-codex-migrations:latest
 ```
 
 #### 1. Clone and Configure
@@ -180,7 +179,7 @@ cp ./arweave-wallet.json api/secrets/arweave_wallet.json
 
 ```bash
 # Build local images from source
-docker compose build api migrations
+docker compose build api
 
 # Run in detached mode on host
 docker compose up -d
@@ -199,11 +198,9 @@ docker compose -f docker-compose.yml -f api/docker-compose.dev.yml up api
 ```bash
 # Optional: pin versions
 export PACTUM_API_IMAGE=univer5al/pactum-codex:latest
-export PACTUM_MIGRATIONS_IMAGE=univer5al/pactum-codex-migrations:latest
 
 # Force pulls, then start without building
 export PACTUM_API_PULL_POLICY=always
-export PACTUM_MIGRATIONS_PULL_POLICY=always
 docker compose pull --include-deps
 docker compose up -d --no-build
 ```
@@ -211,8 +208,8 @@ docker compose up -d --no-build
 To switch back to local builds, unset pull policy and rebuild:
 
 ```bash
-unset PACTUM_API_PULL_POLICY PACTUM_MIGRATIONS_PULL_POLICY
-docker compose build api migrations
+unset PACTUM_API_PULL_POLICY
+docker compose build api
 ```
 
 See [`api/README.md`](api/README.md) for detailed Docker instructions.
@@ -438,25 +435,22 @@ The Dockerfile has been optimized for reliable builds:
 
 ### Docker Image Usage and DockerHub Publishing
 
-Use this sequence to publish both runtime and migrations images:
+Use this sequence to publish the API runtime image:
 
 ```bash
 # 1) Authenticate
 docker login
 
 # 2) Build local images with compose tags
-docker compose build api migrations
+docker compose build api
 
 # 3) Tag release versions (example)
 export VERSION=v0.1.0
 docker tag univer5al/pactum-codex:latest univer5al/pactum-codex:${VERSION}
-docker tag univer5al/pactum-codex-migrations:latest univer5al/pactum-codex-migrations:${VERSION}
 
 # 4) Push latest and version tags
 docker push univer5al/pactum-codex:latest
 docker push univer5al/pactum-codex:${VERSION}
-docker push univer5al/pactum-codex-migrations:latest
-docker push univer5al/pactum-codex-migrations:${VERSION}
 ```
 
 Optional multi-arch publishing with Buildx:
@@ -465,11 +459,6 @@ Optional multi-arch publishing with Buildx:
 docker buildx build --platform linux/amd64,linux/arm64 \
   -f api/Dockerfile --target runtime \
   -t univer5al/pactum-codex:latest \
-  --push .
-
-docker buildx build --platform linux/amd64,linux/arm64 \
-  -f api/Dockerfile --target builder \
-  -t univer5al/pactum-codex-migrations:latest \
   --push .
 ```
 
@@ -510,9 +499,6 @@ docker compose build --no-cache
 docker compose down -v
 docker compose up -d
 
-# Run database migrations manually
-docker compose run --rm migrations
-
 # Access PostgreSQL
 docker exec -it pactum-postgres psql -U pactum -d pactum
 ```
@@ -527,7 +513,7 @@ docker stack deploy -c docker-compose.yml pactum
 docker compose -f docker-compose.yml up -d
 
 # Or force remote image mode on host
-PACTUM_API_PULL_POLICY=always PACTUM_MIGRATIONS_PULL_POLICY=always \
+PACTUM_API_PULL_POLICY=always \
 docker compose -f docker-compose.yml up -d --no-build
 ```
 

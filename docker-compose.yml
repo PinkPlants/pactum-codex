@@ -118,8 +118,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      migrations:
-        condition: service_completed_successfully
     
     healthcheck:
       test: ["CMD", "/usr/local/bin/pactum-codex", "--health-check"]
@@ -147,36 +145,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
-  # ===========================================================================
-  # Database Migrations
-  # ===========================================================================
-  migrations:
-    image: ${PACTUM_MIGRATIONS_IMAGE:-univer5al/pactum-codex-migrations:latest}
-    pull_policy: ${PACTUM_MIGRATIONS_PULL_POLICY:-missing}
-    build:
-      context: .
-      dockerfile: api/Dockerfile
-      target: builder
-    container_name: pactum-migrations
-    command: >
-      sh -c "
-        echo 'Waiting for PostgreSQL...' &&
-        sleep 5 &&
-        cargo sqlx migrate run --database-url \"postgres://pactum:$$(cat /run/secrets/db_password | tr -d '\\n')@postgres:5432/pactum\"
-      "
-    environment:
-      DATABASE_URL: postgres://pactum@postgres:5432/pactum
-    secrets:
-      - db_password
-    networks:
-      - backend
-    depends_on:
-      postgres:
-        condition: service_healthy
-    deploy:
-      restart_policy:
-        condition: none
 
   # ===========================================================================
   # PostgreSQL Database

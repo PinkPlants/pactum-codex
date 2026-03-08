@@ -32,8 +32,8 @@ cp .env.example .env
 ### 3. Local Build + Host Compose
 
 ```bash
-# Build api and migrations images from source
-docker compose build api migrations
+# Build api image from source
+docker compose build api
 
 # Start full stack
 docker compose up -d
@@ -49,9 +49,7 @@ docker compose -f docker-compose.yml -f api/docker-compose.dev.yml up api
 
 ```bash
 export PACTUM_API_IMAGE=univer5al/pactum-codex:latest
-export PACTUM_MIGRATIONS_IMAGE=univer5al/pactum-codex-migrations:latest
 export PACTUM_API_PULL_POLICY=always
-export PACTUM_MIGRATIONS_PULL_POLICY=always
 
 docker compose pull --include-deps
 docker compose up -d --no-build
@@ -63,7 +61,6 @@ docker compose up -d --no-build
 |---------|-------------|------|
 | `api` | Pactum Backend API | 8080 |
 | `postgres` | PostgreSQL 16 database | 5432 (local only) |
-| `migrations` | SQLx database migrations | - |
 
 ## Architecture
 
@@ -118,19 +115,16 @@ docker compose logs -f api
 # Authenticate
 docker login
 
-# Build local images
-docker compose build api migrations
+# Build local image
+docker compose build api
 
 # Tag version
 export VERSION=v0.1.0
 docker tag univer5al/pactum-codex:latest univer5al/pactum-codex:${VERSION}
-docker tag univer5al/pactum-codex-migrations:latest univer5al/pactum-codex-migrations:${VERSION}
 
 # Push latest + version
 docker push univer5al/pactum-codex:latest
 docker push univer5al/pactum-codex:${VERSION}
-docker push univer5al/pactum-codex-migrations:latest
-docker push univer5al/pactum-codex-migrations:${VERSION}
 ```
 
 Optional multi-arch publish:
@@ -139,11 +133,6 @@ Optional multi-arch publish:
 docker buildx build --platform linux/amd64,linux/arm64 \
   -f api/Dockerfile --target runtime \
   -t univer5al/pactum-codex:latest \
-  --push .
-
-docker buildx build --platform linux/amd64,linux/arm64 \
-  -f api/Dockerfile --target builder \
-  -t univer5al/pactum-codex-migrations:latest \
   --push .
 ```
 
