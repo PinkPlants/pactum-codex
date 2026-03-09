@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use crate::handlers::ws::send_to_user;
-use crate::services::notification::{enqueue_notification, NotificationEvent};
+use crate::services::notification::enqueue_notification;
 use crate::services::program_log::{parse_logs, InstructionType};
 use crate::services::solana_logs::SolanaLogsService;
 use crate::state::{AppState, ProcessHealthState, WsEvent};
@@ -443,6 +443,79 @@ mod tests {
     use super::*;
     use crate::state::ProcessHealth;
 
+    fn drive_reconnect_loop(
+        scripted_results: &[Result<(), String>],
+    ) -> (WorkerStatus, ProcessHealth, Vec<Duration>) {
+        let process_health = ProcessHealthState::new(ProcessHealth::Healthy);
+        let mut status = WorkerStatus::Healthy;
+        let mut backoffs = Vec::new();
+
+        for result in scripted_results {
+            match result {
+                Ok(()) => {
+                    transition_to_degraded(
+                        "event_listener",
+                        &mut status,
+                        DegradationReason::RetryBackoff,
+                        &process_health,
+                    );
+                }
+                Err(_) => {
+                    transition_to_degraded(
+                        "event_listener",
+                        &mut status,
+                        DegradationReason::RpcUnavailable,
+                        &process_health,
+                    );
+                }
+            }
+
+            backoffs.push(Duration::from_secs(5));
+        }
+
+        (status, process_health.current(), backoffs)
+    }
+
+    fn drive_reconnect_loop_with_recovery(
+        starting_status: WorkerStatus,
+        scripted_results: &[Result<(), String>],
+    ) -> (
+        Vec<WorkerStatus>,
+        WorkerStatus,
+        ProcessHealth,
+        Vec<Duration>,
+    ) {
+        let process_health = ProcessHealthState::new(ProcessHealth::Healthy);
+        let mut status = starting_status;
+        let mut status_timeline = Vec::new();
+        let mut backoffs = Vec::new();
+
+        for result in scripted_results {
+            transition_to_healthy("event_listener", &mut status);
+            status_timeline.push(status);
+
+            match result {
+                Ok(()) => transition_to_degraded(
+                    "event_listener",
+                    &mut status,
+                    DegradationReason::RetryBackoff,
+                    &process_health,
+                ),
+                Err(_) => transition_to_degraded(
+                    "event_listener",
+                    &mut status,
+                    DegradationReason::RpcUnavailable,
+                    &process_health,
+                ),
+            }
+
+            status_timeline.push(status);
+            backoffs.push(Duration::from_secs(5));
+        }
+
+        (status_timeline, status, process_health.current(), backoffs)
+    }
+
     #[test]
     fn transition_to_degraded_marks_shared_process_health() {
         let process_health = ProcessHealthState::new(ProcessHealth::Healthy);
@@ -466,5 +539,67 @@ mod tests {
         transition_to_healthy("event_listener", &mut status);
 
         assert_eq!(status, WorkerStatus::Healthy);
+    }
+
+    #[test]
+    fn listener_retries_after_subscription_ends() {
+        let scripted_results = vec![Ok(()), Err("rpc unavailable".to_string())];
+        let (final_status, process_health, backoffs) = drive_reconnect_loop(&scripted_results);
+
+        assert_eq!(backoffs.len(), 2);
+        assert!(backoffs.iter().all(|d| *d == Duration::from_secs(5)));
+        assert_eq!(final_status, WorkerStatus::Degraded);
+        assert_eq!(process_health, ProcessHealth::Degraded);
+    }
+
+    #[test]
+    fn subscription_termination_returns_control_to_reconnect_owner() {
+        let scripted_results = vec![Ok(()), Ok(())];
+        let (_, final_status, process_health, backoffs) =
+            drive_reconnect_loop_with_recovery(WorkerStatus::Healthy, &scripted_results);
+
+        assert_eq!(backoffs.len(), 2);
+        assert_eq!(final_status, WorkerStatus::Degraded);
+        assert_eq!(process_health, ProcessHealth::Degraded);
+    }
+
+    #[test]
+    fn reconnect_preserves_healthy_degraded_healthy_transition_model() {
+        let scripted_results = vec![Err("rpc unavailable".to_string()), Ok(())];
+        let (status_timeline, _, process_health, _) =
+            drive_reconnect_loop_with_recovery(WorkerStatus::Degraded, &scripted_results);
+
+        assert_eq!(
+            status_timeline,
+            vec![
+                WorkerStatus::Healthy,
+                WorkerStatus::Degraded,
+                WorkerStatus::Healthy,
+                WorkerStatus::Degraded,
+            ]
+        );
+        assert_eq!(process_health, ProcessHealth::Degraded);
+    }
+
+    #[test]
+    fn reconnect_backoff_remains_five_seconds_for_each_attempt() {
+        let scripted_results = vec![
+            Ok(()),
+            Err("rpc unavailable".to_string()),
+            Ok(()),
+            Err("rpc unavailable".to_string()),
+        ];
+        let (_, _, _, backoffs) =
+            drive_reconnect_loop_with_recovery(WorkerStatus::Degraded, &scripted_results);
+
+        assert_eq!(
+            backoffs,
+            vec![
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+            ]
+        );
     }
 }

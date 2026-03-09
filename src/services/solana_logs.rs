@@ -57,30 +57,28 @@ impl SolanaLogsService {
     /// Subscribe to program logs and return a channel receiver
     ///
     /// This method spawns a blocking task that maintains the WebSocket connection
-    /// and sends parsed logs through the returned channel.
+    /// and sends parsed logs through the returned channel. The subscription is
+    /// single-shot: it runs until the connection closes or the receiver is dropped.
     pub async fn subscribe_logs(&self) -> Result<mpsc::Receiver<ProgramLog>, SolanaLogsError> {
         let (tx, rx) = mpsc::channel::<ProgramLog>(100);
         let ws_url = self.ws_url.clone();
         let program_id = self.program_id;
 
+        // Single-shot subscription: spawn the connection task once
+        // If it fails or the channel closes, the task exits and does not retry
         tokio::spawn(async move {
-            loop {
-                match Self::connect_and_stream(&ws_url, program_id, &tx).await {
-                    Ok(_) => {
-                        info!("solana_logs: connection closed gracefully, reconnecting in 5s");
-                    }
-                    Err(e) => {
-                        error!("solana_logs: connection error: {e}, reconnecting in 5s");
-                    }
-                }
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            if let Err(e) = Self::connect_and_stream(&ws_url, program_id, &tx).await {
+                error!("solana_logs: subscription ended with error: {e}");
             }
+            // Task exits here - no reconnect loop
         });
 
         Ok(rx)
     }
 
     /// Internal method to connect and stream logs
+    ///
+    /// Returns Ok(()) when the channel is closed (receiver dropped) or Err on connection error.
     async fn connect_and_stream(
         ws_url: &str,
         program_id: Pubkey,
@@ -139,13 +137,124 @@ impl SolanaLogsService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{
+        extract::ws::{Message, WebSocket, WebSocketUpgrade},
+        routing::get,
+        Router,
+    };
+    use serde_json::{json, Value};
+    use std::{sync::Arc, time::Duration};
+    use tokio::sync::{oneshot, Mutex};
+
+    const PROGRAM_ID: &str = "DF1cHTN9EE8Qonda1esTeYvFjmbYcoc52vDTjTMKvS1P";
+
+    async fn spawn_mock_pubsub_server(
+    ) -> (String, oneshot::Receiver<()>, tokio::task::JoinHandle<()>) {
+        let (disconnected_tx, disconnected_rx) = oneshot::channel::<()>();
+        let disconnected_tx = Arc::new(Mutex::new(Some(disconnected_tx)));
+
+        let app = Router::new().route(
+            "/",
+            get({
+                let disconnected_tx = disconnected_tx.clone();
+                move |ws: WebSocketUpgrade| {
+                    let disconnected_tx = disconnected_tx.clone();
+                    async move {
+                        ws.on_upgrade(move |socket| async move {
+                            handle_pubsub_socket(socket, disconnected_tx).await;
+                        })
+                    }
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock ws listener");
+        let addr = listener.local_addr().expect("read mock ws listener addr");
+
+        let server_handle = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        (format!("ws://{addr}/"), disconnected_rx, server_handle)
+    }
+
+    async fn handle_pubsub_socket(
+        mut socket: WebSocket,
+        disconnected_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    ) {
+        let request = loop {
+            match socket.recv().await {
+                Some(Ok(Message::Text(request))) => break request,
+                Some(Ok(_)) => continue,
+                Some(Err(_)) | None => return,
+            }
+        };
+
+        let request_json: Value =
+            serde_json::from_str(&request).unwrap_or_else(|_| json!({ "id": 1 }));
+        let request_id = request_json.get("id").cloned().unwrap_or_else(|| json!(1));
+
+        let subscribe_response = json!({
+            "jsonrpc": "2.0",
+            "result": 1,
+            "id": request_id,
+        });
+
+        socket
+            .send(Message::Text(subscribe_response.to_string().into()))
+            .await
+            .expect("send subscribe response");
+
+        let notification = json!({
+            "jsonrpc": "2.0",
+            "method": "logsNotification",
+            "params": {
+                "result": {
+                    "context": { "slot": 42 },
+                    "value": {
+                        "signature": "4vJ9JU1bJJE96FWSJ4Pz7fCXuP8fQmCRvFfLqf1M4q7h",
+                        "err": Value::Null,
+                        "logs": ["Program log: test"]
+                    }
+                },
+                "subscription": 1
+            }
+        });
+
+        socket
+            .send(Message::Text(notification.to_string().into()))
+            .await
+            .expect("send logs notification");
+
+        let disconnected = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                if socket
+                    .send(Message::Text(
+                        "{\"jsonrpc\":\"2.0\",\"method\":\"heartbeat\"}".into(),
+                    ))
+                    .await
+                    .is_err()
+                {
+                    return true;
+                }
+            }
+        })
+        .await
+        .is_ok();
+
+        if disconnected {
+            if let Some(tx) = disconnected_tx.lock().await.take() {
+                let _ = tx.send(());
+            }
+        }
+    }
 
     #[test]
     fn test_new_with_valid_program_id() {
-        let service = SolanaLogsService::new(
-            "wss://api.devnet.solana.com",
-            "DF1cHTN9EE8Qonda1esTeYvFjmbYcoc52vDTjTMKvS1P",
-        );
+        let service = SolanaLogsService::new("wss://api.devnet.solana.com", PROGRAM_ID);
         assert!(service.is_ok());
     }
 
@@ -153,5 +262,43 @@ mod tests {
     fn test_new_with_invalid_program_id() {
         let service = SolanaLogsService::new("wss://api.devnet.solana.com", "invalid-pubkey");
         assert!(service.is_err());
+    }
+
+    #[tokio::test]
+    async fn subscription_stops_when_receiver_drops() {
+        let (ws_url, disconnected_rx, server_handle) = spawn_mock_pubsub_server().await;
+        let service = SolanaLogsService::new(ws_url, PROGRAM_ID).expect("create service");
+
+        let rx = service
+            .subscribe_logs()
+            .await
+            .expect("subscribe should start task");
+
+        drop(rx);
+
+        tokio::time::timeout(Duration::from_secs(3), disconnected_rx)
+            .await
+            .expect("service task should close websocket quickly after receiver drop")
+            .expect("disconnect signal should be sent");
+
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn subscription_error_returns_terminally() {
+        let program_id = Pubkey::from_str(PROGRAM_ID).expect("valid program id");
+        let (tx, _rx) = mpsc::channel::<ProgramLog>(1);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            SolanaLogsService::connect_and_stream("ws://127.0.0.1:1", program_id, &tx),
+        )
+        .await
+        .expect("connection failure should return promptly (no retry loop)");
+
+        assert!(
+            matches!(result, Err(SolanaLogsError::ConnectionFailed(_))),
+            "expected terminal connection failure, got: {result:?}"
+        );
     }
 }
