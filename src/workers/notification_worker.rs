@@ -11,21 +11,34 @@ use std::time::Duration;
 use crate::handlers::ws::send_to_user;
 use crate::services::crypto::decrypt;
 use crate::services::notification::{
-    build_ws_event, fetch_pending_jobs, increment_attempts, mark_sent, send_email, NotificationEvent,
+    build_ws_event, fetch_pending_jobs, increment_attempts, mark_sent, send_email,
+    NotificationEvent,
 };
-use crate::state::AppState;
+use crate::state::{AppState, ProcessHealthState};
+use crate::workers::policy::{DegradationReason, WorkerStatus};
 use sqlx::Row;
 use uuid::Uuid;
 
-/// Entry point — spawned via `tokio::spawn(notification_worker::run(state.clone()))`.
+/// Entry point — spawned via `WorkerSupervisor::spawn`.
 pub async fn run(state: AppState) {
     let mut interval = tokio::time::interval(Duration::from_secs(5));
+    let mut status = WorkerStatus::Healthy;
+
     loop {
         interval.tick().await;
 
         let jobs = match fetch_pending_jobs(&state.db, 10).await {
-            Ok(jobs) => jobs,
+            Ok(jobs) => {
+                transition_to_healthy("notification_worker", &mut status);
+                jobs
+            }
             Err(e) => {
+                transition_to_degraded(
+                    "notification_worker",
+                    &mut status,
+                    DegradationReason::RpcUnavailable,
+                    state.process_health.as_ref(),
+                );
                 tracing::error!("notification_worker: failed to fetch pending jobs: {e}");
                 continue;
             }
@@ -155,6 +168,36 @@ pub async fn run(state: AppState) {
     }
 }
 
+fn transition_to_degraded(
+    worker: &'static str,
+    status: &mut WorkerStatus,
+    reason: DegradationReason,
+    process_health: &ProcessHealthState,
+) {
+    if *status == WorkerStatus::Degraded {
+        return;
+    }
+
+    *status = WorkerStatus::Degraded;
+    process_health.mark_degraded();
+
+    tracing::warn!(
+        worker = worker,
+        ?reason,
+        status = ?WorkerStatus::Degraded,
+        "worker entered degraded retry mode"
+    );
+}
+
+fn transition_to_healthy(worker: &'static str, status: &mut WorkerStatus) {
+    if *status == WorkerStatus::Healthy {
+        return;
+    }
+
+    *status = WorkerStatus::Healthy;
+    tracing::info!(worker = worker, status = ?WorkerStatus::Healthy, "worker recovered");
+}
+
 /// Resolve a wallet pubkey to the internal user UUID.
 async fn lookup_user_id(state: &AppState, pubkey: &str) -> Option<Uuid> {
     let row = sqlx::query("SELECT user_id FROM auth_wallet WHERE pubkey = $1")
@@ -198,5 +241,36 @@ async fn lookup_user_email(state: &AppState, pubkey: &str) -> Option<(String, Ve
     match decrypt(&email_enc, &nonce_array, &key_array) {
         Ok(email) => Some((email, email_nonce)),
         Err(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::ProcessHealth;
+
+    #[test]
+    fn transition_to_degraded_marks_shared_process_health() {
+        let process_health = ProcessHealthState::new(ProcessHealth::Healthy);
+        let mut status = WorkerStatus::Healthy;
+
+        transition_to_degraded(
+            "notification_worker",
+            &mut status,
+            DegradationReason::RpcUnavailable,
+            &process_health,
+        );
+
+        assert_eq!(status, WorkerStatus::Degraded);
+        assert_eq!(process_health.current(), ProcessHealth::Degraded);
+    }
+
+    #[test]
+    fn transition_to_healthy_restores_worker_status_after_recovery() {
+        let mut status = WorkerStatus::Degraded;
+
+        transition_to_healthy("notification_worker", &mut status);
+
+        assert_eq!(status, WorkerStatus::Healthy);
     }
 }

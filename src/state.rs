@@ -1,6 +1,7 @@
 use dashmap::DashMap;
 use solana_sdk::signature::Keypair;
 use sqlx::postgres::PgPool;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -88,6 +89,72 @@ pub struct AppState {
     /// Per-user WebSocket channels — keyed by user_id.
     /// Events are routed directly to the recipient; no global broadcast.
     pub ws_channels: Arc<DashMap<Uuid, broadcast::Sender<WsEvent>>>,
+    pub process_health: Arc<ProcessHealthState>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessHealth {
+    Healthy,
+    Degraded,
+    RuntimeFailed,
+    StartupFailed,
+}
+
+pub struct ProcessHealthState {
+    state: AtomicU8,
+}
+
+impl ProcessHealthState {
+    const HEALTHY: u8 = 0;
+    const DEGRADED: u8 = 1;
+    const RUNTIME_FAILED: u8 = 2;
+    const STARTUP_FAILED: u8 = 3;
+
+    pub fn new(initial: ProcessHealth) -> Self {
+        Self {
+            state: AtomicU8::new(Self::encode(initial)),
+        }
+    }
+
+    pub fn current(&self) -> ProcessHealth {
+        Self::decode(self.state.load(Ordering::Relaxed))
+    }
+
+    pub fn set(&self, next: ProcessHealth) {
+        self.state.store(Self::encode(next), Ordering::Relaxed);
+    }
+
+    pub fn mark_degraded(&self) {
+        let _ = self.state.compare_exchange(
+            Self::HEALTHY,
+            Self::DEGRADED,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+    }
+
+    pub fn mark_runtime_failed(&self) {
+        self.set(ProcessHealth::RuntimeFailed);
+    }
+
+    fn encode(status: ProcessHealth) -> u8 {
+        match status {
+            ProcessHealth::Healthy => Self::HEALTHY,
+            ProcessHealth::Degraded => Self::DEGRADED,
+            ProcessHealth::RuntimeFailed => Self::RUNTIME_FAILED,
+            ProcessHealth::StartupFailed => Self::STARTUP_FAILED,
+        }
+    }
+
+    fn decode(value: u8) -> ProcessHealth {
+        match value {
+            Self::HEALTHY => ProcessHealth::Healthy,
+            Self::DEGRADED => ProcessHealth::Degraded,
+            Self::RUNTIME_FAILED => ProcessHealth::RuntimeFailed,
+            Self::STARTUP_FAILED => ProcessHealth::StartupFailed,
+            _ => ProcessHealth::StartupFailed,
+        }
+    }
 }
 
 impl AsRef<Config> for AppState {
@@ -131,5 +198,19 @@ mod tests {
         let _: fn(AppState) -> () = |state| {
             let _ = state.clone();
         };
+    }
+
+    #[test]
+    fn mark_degraded_does_not_override_runtime_failed() {
+        let state = ProcessHealthState::new(ProcessHealth::RuntimeFailed);
+        state.mark_degraded();
+        assert_eq!(state.current(), ProcessHealth::RuntimeFailed);
+    }
+
+    #[test]
+    fn mark_degraded_does_not_override_startup_failed() {
+        let state = ProcessHealthState::new(ProcessHealth::StartupFailed);
+        state.mark_degraded();
+        assert_eq!(state.current(), ProcessHealth::StartupFailed);
     }
 }

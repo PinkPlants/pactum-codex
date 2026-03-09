@@ -173,7 +173,7 @@ mod tests {
     use super::*;
     use crate::{
         config::{Config, StablecoinInfo, StablecoinRegistry},
-        state::ProtectedKeypair,
+        state::{ProcessHealth, ProcessHealthState, ProtectedKeypair},
     };
     use axum::http::{HeaderMap, HeaderValue};
     use dashmap::DashMap;
@@ -255,6 +255,7 @@ mod tests {
             vault_keypair: Arc::new(ProtectedKeypair(Keypair::new())),
             treasury_keypair: Arc::new(ProtectedKeypair(Keypair::new())),
             ws_channels: Arc::new(DashMap::new()),
+            process_health: Arc::new(ProcessHealthState::new(ProcessHealth::Healthy)),
         }
     }
 

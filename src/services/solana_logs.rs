@@ -4,7 +4,9 @@
 //! Uses solana_client::pubsub_client::PubsubClient for logsSubscribe.
 
 use solana_client::pubsub_client::PubsubClient;
-use solana_client::rpc_config::{CommitmentConfig, RpcTransactionLogsConfig, RpcTransactionLogsFilter};
+use solana_client::rpc_config::{
+    CommitmentConfig, RpcTransactionLogsConfig, RpcTransactionLogsFilter,
+};
 use solana_sdk::pubkey::Pubkey;
 use std::str::FromStr;
 use thiserror::Error;
@@ -149,10 +151,7 @@ mod tests {
 
     #[test]
     fn test_new_with_invalid_program_id() {
-        let service = SolanaLogsService::new(
-            "wss://api.devnet.solana.com",
-            "invalid-pubkey",
-        );
+        let service = SolanaLogsService::new("wss://api.devnet.solana.com", "invalid-pubkey");
         assert!(service.is_err());
     }
 }

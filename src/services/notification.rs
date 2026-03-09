@@ -357,19 +357,19 @@ fn render_email_text(event: &NotificationEvent, agreement_pda: Option<&str>) -> 
             "The credential has been revoked by unanimous consent.\n\nAgreement ID: {}",
             pda_display
         ),
-        NotificationEvent::DraftReadyToSubmit => 
+        NotificationEvent::DraftReadyToSubmit =>
             "All parties have joined your agreement draft and it's ready to submit.\n\nSubmit at: https://app.pactum.app/drafts".to_string(),
-        NotificationEvent::InvitationExpired => 
+        NotificationEvent::InvitationExpired =>
             "A party hasn't responded to your agreement invitation within the time limit.\n\nYou can resend the invitation or discard the draft.".to_string(),
         NotificationEvent::InvitationReminder => format!(
             "This is a reminder that you've been invited to sign an agreement.\n\nAgreement ID: {}",
             pda_display
         ),
-        NotificationEvent::PaymentConfirmed => 
+        NotificationEvent::PaymentConfirmed =>
             "Your payment has been confirmed and your agreement is ready to submit.\n\nSubmit at: https://app.pactum.app/drafts".to_string(),
-        NotificationEvent::RefundInitiated => 
+        NotificationEvent::RefundInitiated =>
             "Your refund is being processed.\n\nThis may take a few minutes to complete.".to_string(),
-        NotificationEvent::RefundCompleted => 
+        NotificationEvent::RefundCompleted =>
             "Your refund has been sent to your wallet.\n\nThe funds should appear in your account shortly.".to_string(),
     }
 }

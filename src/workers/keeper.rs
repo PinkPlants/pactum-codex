@@ -6,10 +6,9 @@
 
 use std::time::Duration;
 
-use crate::services::notification::{
-    enqueue_notification, send_email, NotificationEvent,
-};
+use crate::services::notification::{enqueue_notification, send_email, NotificationEvent};
 use crate::state::AppState;
+use crate::workers::policy::{DegradationReason, WorkerStatus};
 use solana_sdk::pubkey::Pubkey;
 use solana_sdk::signer::Signer;
 use sqlx::Row;
@@ -18,8 +17,18 @@ use std::str::FromStr;
 /// Entry point — spawned via `tokio::spawn(keeper::run(state.clone()))`.
 pub async fn run(state: AppState) {
     let mut interval = tokio::time::interval(Duration::from_secs(60));
+    let mut status = WorkerStatus::Healthy;
+
     loop {
         interval.tick().await;
+
+        if status == WorkerStatus::Disabled {
+            tracing::warn!(
+                "keeper: worker is disabled after circuit breaker trip; skipping housekeeping cycle"
+            );
+            continue;
+        }
+
         tracing::debug!("keeper: starting housekeeping cycle");
 
         // Scan 1: send reminder emails for pending invitations
@@ -29,7 +38,13 @@ pub async fn run(state: AppState) {
         expire_stale_invitations(&state).await;
 
         // Scan 3: check hot wallet balances — alert or circuit-break if low
-        check_hot_wallet_balances(&state).await;
+        status = check_hot_wallet_balances(&state).await;
+        if status == WorkerStatus::Disabled {
+            tracing::error!(
+                "keeper: worker transitioned to disabled state; suppressing remaining scans"
+            );
+            continue;
+        }
 
         // Scan 4: sweep excess treasury stablecoins to cold wallet (runs daily)
         sweep_treasury_excess(&state).await;
@@ -148,35 +163,39 @@ async fn expire_stale_invitations(state: &AppState) {
 // Scan 3 — Hot wallet balance check
 // ---------------------------------------------------------------------------
 
-async fn check_hot_wallet_balances(state: &AppState) {
+async fn check_hot_wallet_balances(state: &AppState) -> WorkerStatus {
     let vault_pubkey = state.vault_keypair.0.pubkey();
     let rpc = state.solana.clone();
 
     // Check vault SOL balance
-    let vault_sol = match tokio::task::spawn_blocking(move || rpc.get_balance(&vault_pubkey))
-        .await
+    let vault_sol = match tokio::task::spawn_blocking(move || rpc.get_balance(&vault_pubkey)).await
     {
         Ok(Ok(balance)) => balance,
         Ok(Err(e)) => {
             tracing::error!("keeper: failed to get vault balance: {e}");
-            return;
+            return WorkerStatus::Healthy;
         }
         Err(e) => {
             tracing::error!("keeper: vault balance task failed: {e}");
-            return;
+            return WorkerStatus::Healthy;
         }
     };
 
     let vault_sol_f64 = vault_sol as f64 / 1_000_000_000.0;
 
     // Circuit breaker check
-    if vault_sol_f64 < state.config.vault_min_sol_circuit_breaker {
+    if let Some((status, reason)) =
+        circuit_breaker_status(vault_sol_f64, state.config.vault_min_sol_circuit_breaker)
+    {
+        state.process_health.mark_degraded();
         tracing::error!(
-            "CIRCUIT BREAKER: vault SOL {} below minimum {} — halting",
-            vault_sol_f64,
-            state.config.vault_min_sol_circuit_breaker
+            ?status,
+            ?reason,
+            vault_sol = vault_sol_f64,
+            min_vault_sol = state.config.vault_min_sol_circuit_breaker,
+            "keeper: vault SOL below circuit-breaker threshold; disabling keeper worker while API remains available"
         );
-        std::process::exit(1);
+        return status;
     }
 
     // Alert threshold check
@@ -194,31 +213,26 @@ async fn check_hot_wallet_balances(state: &AppState) {
         Ok(mint) => mint,
         Err(_) => {
             tracing::error!("keeper: invalid USDC mint pubkey");
-            return;
+            return WorkerStatus::Healthy;
         }
     };
 
-    let usdc_ata = spl_associated_token_account::get_associated_token_address(
-        &treasury_pubkey,
-        &usdc_mint,
-    );
+    let usdc_ata =
+        spl_associated_token_account::get_associated_token_address(&treasury_pubkey, &usdc_mint);
 
     let rpc = state.solana.clone();
-    let usdc_balance = match tokio::task::spawn_blocking(move || {
-        rpc.get_token_account_balance(&usdc_ata)
-    })
-    .await
-    {
-        Ok(Ok(balance)) => balance.amount.parse::<u64>().unwrap_or(0),
-        Ok(Err(e)) => {
-            tracing::error!("keeper: failed to get USDC balance: {e}");
-            return;
-        }
-        Err(e) => {
-            tracing::error!("keeper: USDC balance task failed: {e}");
-            return;
-        }
-    };
+    let usdc_balance =
+        match tokio::task::spawn_blocking(move || rpc.get_token_account_balance(&usdc_ata)).await {
+            Ok(Ok(balance)) => balance.amount.parse::<u64>().unwrap_or(0),
+            Ok(Err(e)) => {
+                tracing::error!("keeper: failed to get USDC balance: {e}");
+                return WorkerStatus::Healthy;
+            }
+            Err(e) => {
+                tracing::error!("keeper: USDC balance task failed: {e}");
+                return WorkerStatus::Healthy;
+            }
+        };
 
     if usdc_balance < state.config.treasury_min_usdc_alert {
         tracing::warn!(
@@ -226,6 +240,20 @@ async fn check_hot_wallet_balances(state: &AppState) {
             usdc_balance,
             state.config.treasury_min_usdc_alert
         );
+    }
+
+    WorkerStatus::Healthy
+}
+
+fn circuit_breaker_status(
+    vault_sol_f64: f64,
+    vault_min_sol_circuit_breaker: f64,
+) -> Option<(WorkerStatus, DegradationReason)> {
+    if vault_sol_f64 < vault_min_sol_circuit_breaker {
+        let reason = DegradationReason::CircuitBreakerTripped;
+        Some((reason.suggested_status(), reason))
+    } else {
+        None
     }
 }
 
@@ -267,20 +295,15 @@ async fn sweep_treasury_excess(state: &AppState) {
             Err(_) => continue,
         };
 
-        let ata = spl_associated_token_account::get_associated_token_address(
-            &treasury_pubkey,
-            &mint,
-        );
+        let ata =
+            spl_associated_token_account::get_associated_token_address(&treasury_pubkey, &mint);
 
         let rpc = state.solana.clone();
-        let balance = match tokio::task::spawn_blocking(move || {
-            rpc.get_token_account_balance(&ata)
-        })
-        .await
-        {
-            Ok(Ok(bal)) => bal.amount.parse::<u64>().unwrap_or(0),
-            _ => continue,
-        };
+        let balance =
+            match tokio::task::spawn_blocking(move || rpc.get_token_account_balance(&ata)).await {
+                Ok(Ok(bal)) => bal.amount.parse::<u64>().unwrap_or(0),
+                _ => continue,
+            };
 
         let keep = state.config.treasury_float_per_token;
         if balance > keep {
@@ -300,7 +323,7 @@ async fn sweep_treasury_excess(state: &AppState) {
     // Mark as swept today
     sqlx::query(
         "INSERT INTO sweep_config (id, last_sweep_at) VALUES (1, $1) \
-         ON CONFLICT (id) DO UPDATE SET last_sweep_at = $1"
+         ON CONFLICT (id) DO UPDATE SET last_sweep_at = $1",
     )
     .bind(chrono::Utc::now().timestamp())
     .execute(&state.db)
@@ -349,7 +372,7 @@ async fn reconcile_late_payments(state: &AppState) {
          FROM agreement_payments \
          WHERE status = 'expired' \
            AND created_at > $1 \
-           AND token_reference_pubkey IS NOT NULL"
+           AND token_reference_pubkey IS NOT NULL",
     )
     .bind(threshold)
     .fetch_all(&state.db)
@@ -379,15 +402,21 @@ async fn reconcile_late_payments(state: &AppState) {
                 "UPDATE agreement_payments \
                  SET status = 'refund_pending', \
                      refund_initiated_at = extract(epoch from now()) \
-                 WHERE id = $1"
+                 WHERE id = $1",
             )
             .bind(payment_id)
             .execute(&state.db)
             .await
             {
-                tracing::error!("keeper: failed to mark payment {} for refund: {e}", payment_id);
+                tracing::error!(
+                    "keeper: failed to mark payment {} for refund: {e}",
+                    payment_id
+                );
             } else {
-                tracing::info!("keeper: reconciled late payment {} — marked for refund", payment_id);
+                tracing::info!(
+                    "keeper: reconciled late payment {} — marked for refund",
+                    payment_id
+                );
             }
         }
     }
@@ -416,5 +445,42 @@ async fn cleanup_expired_auth_records(state: &AppState) {
         .await
     {
         tracing::error!("keeper: cleanup refresh_tokens failed: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{ProcessHealth, ProcessHealthState};
+
+    #[test]
+    fn circuit_breaker_status_disables_keeper_when_vault_sol_too_low() {
+        let status_reason = circuit_breaker_status(0.1, 0.5);
+        assert_eq!(
+            status_reason,
+            Some((
+                WorkerStatus::Disabled,
+                DegradationReason::CircuitBreakerTripped
+            ))
+        );
+    }
+
+    #[test]
+    fn circuit_breaker_status_keeps_keeper_healthy_when_balance_is_sufficient() {
+        let status_reason = circuit_breaker_status(1.0, 0.5);
+        assert_eq!(status_reason, None);
+    }
+
+    #[test]
+    fn circuit_breaker_path_marks_process_health_degraded_without_process_exit() {
+        let process_health = ProcessHealthState::new(ProcessHealth::Healthy);
+
+        let maybe_status = circuit_breaker_status(0.1, 0.5).map(|(status, _)| {
+            process_health.mark_degraded();
+            status
+        });
+
+        assert_eq!(maybe_status, Some(WorkerStatus::Disabled));
+        assert_eq!(process_health.current(), ProcessHealth::Degraded);
     }
 }

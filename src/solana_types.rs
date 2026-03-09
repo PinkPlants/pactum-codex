@@ -254,4 +254,35 @@ mod tests {
         let max_days = MAX_EXPIRY_SECONDS / SECONDS_PER_DAY;
         assert_eq!(max_days, 90);
     }
+
+    // =========================================================================
+    // STARTUP FATAL PATH TESTS
+    // =========================================================================
+    // These tests document and guard the intentional fail-fast behaviors.
+    // See: startup_fatal_path.md#static-invariants
+
+    /// Test that PROGRAM_ID is a valid Solana public key.
+    /// FAIL-FAST CATEGORY: Static Invariant
+    /// If this fails, the binary is misconfigured and must not start.
+    #[test]
+    fn test_program_id_is_valid_pubkey() {
+        use solana_sdk::pubkey::Pubkey;
+
+        // This parses the PROGRAM_ID constant and verifies it's a valid pubkey.
+        // The pactum_program_pubkey() function in services::solana uses expect()
+        // to ensure startup aborts if this fails.
+        let pubkey: Pubkey = PROGRAM_ID
+            .parse()
+            .expect("PROGRAM_ID must be a valid Solana public key - this is a static invariant");
+
+        // Verify the pubkey matches the expected value
+        assert_eq!(pubkey.to_string(), PROGRAM_ID);
+    }
+
+    /// Test that PROGRAM_ID matches the expected production value.
+    /// This guards against accidental modification of the program ID.
+    #[test]
+    fn test_program_id_matches_expected() {
+        assert_eq!(PROGRAM_ID, "DF1cHTN9EE8Qonda1esTeYvFjmbYcoc52vDTjTMKvS1P");
+    }
 }

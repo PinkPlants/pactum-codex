@@ -156,6 +156,26 @@ docker stack deploy -c docker-compose.yml pactum
 curl http://localhost:8080/health
 ```
 
+### Reproducible Runtime Verification (Task 13)
+
+Run automated Docker/Compose runtime verification from repository root:
+
+```bash
+./scripts/verify_compose_runtime.sh all
+```
+
+This script performs deterministic pass/fail checks (no manual log watching):
+
+- `health` scenario: starts compose stack, verifies `/health` is healthy, and asserts
+  API startup banner is not repeatedly emitted by healthcheck probes.
+- `degraded` scenario: stops `postgres` to trigger runtime worker degradation,
+  then verifies `/health` still responds with degraded status while API remains up.
+
+Evidence artifacts are written to:
+
+- `.sisyphus/evidence/task-13-compose-health.txt`
+- `.sisyphus/evidence/task-13-compose-degraded.txt`
+
 ## Troubleshooting
 
 ### Secret Files Not Found

@@ -8,20 +8,31 @@ use std::time::Duration;
 
 use crate::services::refund::execute_refund;
 use crate::state::AppState;
+use crate::workers::policy::{DegradationReason, WorkerStatus};
 use sqlx::Row;
 use uuid::Uuid;
 
 /// Entry point — spawned via `tokio::spawn(refund_worker::run(state.clone()))`.
 pub async fn run(state: AppState) {
     let mut interval = tokio::time::interval(Duration::from_secs(30));
+    let mut status = WorkerStatus::Healthy;
+
     loop {
         interval.tick().await;
-        process_pending_refunds(&state).await;
+
+        if status == WorkerStatus::Disabled {
+            tracing::warn!(
+                "refund_worker: disabled; skipping cycle while service remains available"
+            );
+            continue;
+        }
+
+        status = process_pending_refunds(&state).await;
     }
 }
 
 /// Query all `refund_pending` payments and attempt to execute each refund.
-async fn process_pending_refunds(state: &AppState) {
+async fn process_pending_refunds(state: &AppState) -> WorkerStatus {
     // Query payments with refund_pending status and their associated creator
     let rows = sqlx::query(
         "SELECT p.id, p.agreement_pda, p.token_mint, p.refund_amount, a.creator_pubkey \
@@ -38,13 +49,17 @@ async fn process_pending_refunds(state: &AppState) {
     let rows = match rows {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!("refund_worker: failed to query pending refunds: {e}");
-            return;
+            return report_degraded(
+                state,
+                DegradationReason::RpcUnavailable,
+                "failed to query pending refunds",
+                &e,
+            );
         }
     };
 
     if rows.is_empty() {
-        return;
+        return WorkerStatus::Healthy;
     }
 
     tracing::info!("refund_worker: processing {} pending refund(s)", rows.len());
@@ -109,20 +124,87 @@ async fn process_pending_refunds(state: &AppState) {
                 .execute(&state.db)
                 .await
                 {
-                    tracing::error!(
-                        "refund_worker: failed to mark payment {} as refunded: {e}",
-                        id
+                    report_degraded(
+                        state,
+                        DegradationReason::RetryBackoff,
+                        &format!("failed to mark payment {id} as refunded"),
+                        &e,
                     );
                 }
             }
             Err(e) => {
                 // Log and retry next cycle — no status change so it stays refund_pending
-                tracing::warn!(
-                    "refund_worker: refund failed for payment {} — will retry next cycle: {:?}",
-                    id,
-                    e
+                report_degraded(
+                    state,
+                    DegradationReason::RetryBackoff,
+                    &format!("refund failed for payment {id} — will retry next cycle"),
+                    &e,
                 );
             }
         }
+    }
+
+    WorkerStatus::Healthy
+}
+
+fn report_degraded(
+    state: &AppState,
+    reason: DegradationReason,
+    message: &str,
+    error: &dyn std::fmt::Debug,
+) -> WorkerStatus {
+    let status = status_for_reason(&state.process_health, reason);
+
+    tracing::warn!(
+        ?status,
+        ?reason,
+        error = ?error,
+        "refund_worker: {message}"
+    );
+
+    status
+}
+
+fn status_for_reason(
+    process_health: &crate::state::ProcessHealthState,
+    reason: DegradationReason,
+) -> WorkerStatus {
+    let status = reason.suggested_status();
+    if status == WorkerStatus::Degraded {
+        process_health.mark_degraded();
+    }
+    status
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{ProcessHealth, ProcessHealthState};
+    use std::sync::Arc;
+
+    #[test]
+    fn sql_query_failure_reason_surfaces_degraded_status() {
+        assert_eq!(
+            DegradationReason::RpcUnavailable.suggested_status(),
+            WorkerStatus::Degraded
+        );
+    }
+
+    #[test]
+    fn rpc_retry_failure_reason_surfaces_degraded_status() {
+        assert_eq!(
+            DegradationReason::RetryBackoff.suggested_status(),
+            WorkerStatus::Degraded
+        );
+    }
+
+    #[test]
+    fn degraded_status_marks_process_health_for_refund_worker_failures() {
+        let process_health = Arc::new(ProcessHealthState::new(ProcessHealth::Healthy));
+
+        let status = status_for_reason(&process_health, DegradationReason::RpcUnavailable);
+
+        assert_eq!(status, WorkerStatus::Degraded);
+        assert_eq!(process_health.current(), ProcessHealth::Degraded);
     }
 }

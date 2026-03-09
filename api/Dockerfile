@@ -68,6 +68,7 @@ FROM debian:bookworm-slim AS runtime
 # Install runtime dependencies only
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    curl \
     libssl3 \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
@@ -91,9 +92,8 @@ USER 10001
 EXPOSE 8080
 
 # Health check endpoint
-# The backend should implement a /health endpoint that returns 200 OK
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD ["/usr/local/bin/pactum-codex", "--health-check"] || exit 1
+    CMD ["curl", "-fsS", "http://localhost:8080/health"]
 
 # Run the application
 ENTRYPOINT ["/usr/local/bin/pactum-codex"]

@@ -36,7 +36,10 @@ pub async fn execute_refund(
 ) -> Result<String, AppError> {
     let treasury_pubkey = treasury.0.pubkey();
     let creator_pubkey = Pubkey::from_str(creator_pubkey_str).map_err(|e| {
-        tracing::error!("refund: invalid creator pubkey '{}': {e}", creator_pubkey_str);
+        tracing::error!(
+            "refund: invalid creator pubkey '{}': {e}",
+            creator_pubkey_str
+        );
         AppError::InternalError
     })?;
     let token_mint = Pubkey::from_str(token_mint_str).map_err(|e| {
@@ -91,19 +94,20 @@ pub async fn execute_refund(
     .map_err(|_| AppError::TransactionSigningFailed)?;
 
     let rpc_url_for_blockhash = rpc_url.clone();
-    let recent_blockhash =
-        tokio::task::spawn_blocking(move || RpcClient::new(rpc_url_for_blockhash).get_latest_blockhash())
-            .await
-            .map_err(|e| {
-                tracing::error!("refund: latest blockhash task join failure: {e}");
-                AppError::InternalError
-            })
-            .and_then(|result| {
-                result.map_err(|e| {
-                    tracing::error!("refund: latest blockhash RPC failure: {e}");
-                    AppError::SolanaRpcError
-                })
-            })?;
+    let recent_blockhash = tokio::task::spawn_blocking(move || {
+        RpcClient::new(rpc_url_for_blockhash).get_latest_blockhash()
+    })
+    .await
+    .map_err(|e| {
+        tracing::error!("refund: latest blockhash task join failure: {e}");
+        AppError::InternalError
+    })
+    .and_then(|result| {
+        result.map_err(|e| {
+            tracing::error!("refund: latest blockhash RPC failure: {e}");
+            AppError::SolanaRpcError
+        })
+    })?;
 
     let tx = Transaction::new_signed_with_payer(
         &[transfer_ix],
@@ -133,17 +137,17 @@ pub async fn execute_refund(
             ]),
         )
     })
-        .await
-        .map_err(|e| {
-            tracing::error!("refund: submit transaction task join failure: {e}");
-            AppError::InternalError
+    .await
+    .map_err(|e| {
+        tracing::error!("refund: submit transaction task join failure: {e}");
+        AppError::InternalError
+    })
+    .and_then(|result| {
+        result.map_err(|e| {
+            tracing::error!("refund: submit transaction RPC failure: {e}");
+            AppError::SolanaRpcError
         })
-        .and_then(|result| {
-            result.map_err(|e| {
-                tracing::error!("refund: submit transaction RPC failure: {e}");
-                AppError::SolanaRpcError
-            })
-        })?;
+    })?;
 
     Ok(signature)
 }
@@ -151,6 +155,7 @@ pub async fn execute_refund(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use solana_sdk::signature::Keypair;
 
     #[test]
     fn test_calculate_refund_full() {
@@ -192,5 +197,22 @@ mod tests {
         // 200 cents total, 100 nonrefundable → exactly half
         let result = calculate_refund_amount(2_000_000, 100, 200);
         assert_eq!(result, 1_000_000);
+    }
+
+    #[tokio::test]
+    async fn execute_refund_returns_solana_rpc_error_when_rpc_is_unavailable() {
+        let rpc = RpcClient::new("http://127.0.0.1:0".to_string());
+        let treasury = ProtectedKeypair(Keypair::new());
+
+        let result = execute_refund(
+            &rpc,
+            &treasury,
+            "11111111111111111111111111111111",
+            "So11111111111111111111111111111111111111112",
+            1,
+        )
+        .await;
+
+        assert!(matches!(result, Err(AppError::SolanaRpcError)));
     }
 }

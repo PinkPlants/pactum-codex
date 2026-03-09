@@ -29,6 +29,12 @@ pub const VOTE_REVOKE_DISCRIMINATOR: [u8; 8] = [37, 199, 69, 222, 97, 220, 96, 2
 pub const RETRACT_REVOKE_VOTE_DISCRIMINATOR: [u8; 8] = [221, 206, 3, 95, 171, 167, 185, 239];
 pub const INITIALIZE_COLLECTION_DISCRIMINATOR: [u8; 8] = [112, 62, 53, 139, 173, 152, 98, 93];
 
+/// Returns the Pactum program pubkey.
+///
+/// FAIL-FAST: PROGRAM_ID is a compile-time constant defined in solana_types.rs.
+/// If it fails to parse, the binary is misconfigured and must not start.
+/// This is not a runtime error - the program ID is hardcoded.
+/// See: startup_fatal_path.md#static-invariants
 fn pactum_program_pubkey() -> Pubkey {
     PROGRAM_ID
         .parse::<Pubkey>()

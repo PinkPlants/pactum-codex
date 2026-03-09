@@ -14,6 +14,7 @@ use std::time::Duration;
 use crate::error::AppError;
 use crate::services::solana::build_expire_agreement_tx;
 use crate::state::AppState;
+use crate::workers::policy::{DegradationReason, WorkerStatus};
 use base64::Engine;
 use sqlx::Row;
 
@@ -21,13 +22,23 @@ const SCAN_INTERVAL_SECONDS: u64 = 300; // 5 minutes
 
 pub async fn run(state: AppState) {
     let mut interval = tokio::time::interval(Duration::from_secs(SCAN_INTERVAL_SECONDS));
+    let mut status = WorkerStatus::Healthy;
+
     loop {
         interval.tick().await;
-        expire_due_agreements(&state).await;
+
+        if status == WorkerStatus::Disabled {
+            tracing::warn!(
+                "expiry_worker: disabled; skipping cycle while service remains available"
+            );
+            continue;
+        }
+
+        status = expire_due_agreements(&state).await;
     }
 }
 
-async fn expire_due_agreements(state: &AppState) {
+async fn expire_due_agreements(state: &AppState) -> WorkerStatus {
     let now = chrono::Utc::now().timestamp();
 
     let rows = sqlx::query(
@@ -43,13 +54,17 @@ async fn expire_due_agreements(state: &AppState) {
     let rows = match rows {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!("expiry_worker: failed to query expired agreements: {e}");
-            return;
+            return report_degraded(
+                state,
+                DegradationReason::RpcUnavailable,
+                "failed to query expired agreements",
+                &e,
+            );
         }
     };
 
     if rows.is_empty() {
-        return;
+        return WorkerStatus::Healthy;
     }
 
     tracing::info!(
@@ -88,18 +103,20 @@ async fn expire_due_agreements(state: &AppState) {
                         );
                     }
                     Err(e) => {
-                        tracing::error!(
-                            "expiry_worker: expire_agreement failed for {}: {}",
-                            agreement_pda,
-                            e
+                        report_degraded(
+                            state,
+                            DegradationReason::RetryBackoff,
+                            &format!("expire_agreement failed for {agreement_pda}"),
+                            &e,
                         );
                         if let Err(revert_err) =
                             unlock_agreement_from_expiry(&state.db, &agreement_pda).await
                         {
-                            tracing::error!(
-                                "expiry_worker: failed to revert lock for {}: {}",
-                                agreement_pda,
-                                revert_err
+                            report_degraded(
+                                state,
+                                DegradationReason::RetryBackoff,
+                                &format!("failed to revert lock for {agreement_pda}"),
+                                &revert_err,
                             );
                         }
                     }
@@ -112,14 +129,17 @@ async fn expire_due_agreements(state: &AppState) {
                 );
             }
             Err(e) => {
-                tracing::error!(
-                    "expiry_worker: failed to lock agreement {}: {}",
-                    agreement_pda,
-                    e
+                report_degraded(
+                    state,
+                    DegradationReason::RetryBackoff,
+                    &format!("failed to lock agreement {agreement_pda}"),
+                    &e,
                 );
             }
         }
     }
+
+    WorkerStatus::Healthy
 }
 
 async fn lock_agreement_for_expiry(
@@ -211,7 +231,8 @@ async fn submit_transaction_rpc(
     use solana_client::rpc_request::RpcRequest;
     use solana_sdk::signature::Signature;
 
-    let serialized = bincode::serialize(transaction).map_err(|_| crate::error::AppError::InternalError)?;
+    let serialized =
+        bincode::serialize(transaction).map_err(|_| crate::error::AppError::InternalError)?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(serialized);
     let rpc_url = rpc_url.to_string();
 
@@ -226,12 +247,74 @@ async fn submit_transaction_rpc(
     Signature::from_str(&sig_str).map_err(|_| crate::error::AppError::InternalError)
 }
 
+fn report_degraded(
+    state: &AppState,
+    reason: DegradationReason,
+    message: &str,
+    error: &dyn std::fmt::Display,
+) -> WorkerStatus {
+    let status = status_for_reason(&state.process_health, reason);
+
+    tracing::error!(
+        ?status,
+        ?reason,
+        error = %error,
+        "expiry_worker: {message}"
+    );
+
+    status
+}
+
+fn status_for_reason(
+    process_health: &crate::state::ProcessHealthState,
+    reason: DegradationReason,
+) -> WorkerStatus {
+    let status = reason.suggested_status();
+    if status == WorkerStatus::Degraded {
+        process_health.mark_degraded();
+    }
+    status
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::AppError;
+    use crate::state::{ProcessHealth, ProcessHealthState};
 
     #[test]
     fn test_scan_interval_is_5_minutes() {
         assert_eq!(SCAN_INTERVAL_SECONDS, 300);
+    }
+
+    #[tokio::test]
+    async fn submit_transaction_rpc_returns_solana_rpc_error_on_invalid_rpc_url() {
+        let transaction = solana_sdk::transaction::Transaction::default();
+
+        let result = submit_transaction_rpc("not-a-valid-url", &transaction).await;
+
+        assert!(matches!(result, Err(AppError::SolanaRpcError)));
+    }
+
+    #[test]
+    fn sql_and_rpc_failures_map_to_degraded_status() {
+        assert_eq!(
+            DegradationReason::RpcUnavailable.suggested_status(),
+            WorkerStatus::Degraded
+        );
+        assert_eq!(
+            DegradationReason::RetryBackoff.suggested_status(),
+            WorkerStatus::Degraded
+        );
+    }
+
+    #[test]
+    fn degraded_status_marks_process_health_for_expiry_worker_failures() {
+        let process_health = ProcessHealthState::new(ProcessHealth::Healthy);
+
+        let status = status_for_reason(&process_health, DegradationReason::RetryBackoff);
+
+        assert_eq!(status, WorkerStatus::Degraded);
+        assert_eq!(process_health.current(), ProcessHealth::Degraded);
     }
 }

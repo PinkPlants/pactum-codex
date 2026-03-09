@@ -110,6 +110,20 @@ pub struct Config {
 impl Config {
     /// Load configuration from environment variables
     /// Panics if any required variable is missing or invalid
+    ///
+    /// FAIL-FAST CATEGORIES:
+    /// - Required Config: DATABASE_URL, SOLANA_RPC_URL, SOLANA_WS_URL, PROGRAM_ID,
+    ///   JWT_SECRET, ENCRYPTION_KEY, ENCRYPTION_INDEX_KEY
+    /// - OAuth Providers: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
+    ///   MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET
+    /// - Email: RESEND_API_KEY
+    /// - Hot Wallets: PLATFORM_VAULT_PUBKEY, PLATFORM_VAULT_KEYPAIR_PATH,
+    ///   PLATFORM_TREASURY_PUBKEY, PLATFORM_TREASURY_KEYPAIR_PATH, TREASURY_SWEEP_DEST
+    /// - Stablecoins: STABLECOIN_USDC_ATA, STABLECOIN_USDT_ATA, STABLECOIN_PYUSD_ATA
+    /// - Storage: PINATA_JWT
+    ///
+    /// These are intentional startup aborts. The service cannot function without
+    /// these values correctly configured. See: startup_fatal_path.md#required-config
     pub fn from_env() -> Self {
         // Load .env file if present
         dotenvy::dotenv().ok();
@@ -365,5 +379,21 @@ mod tests {
     #[should_panic(expected = "must contain '@'")]
     fn test_inject_password_panics_without_at() {
         inject_password_into_url("postgres://localhost/db", "pw");
+    }
+
+    // =========================================================================
+    // STARTUP FATAL PATH TESTS
+    // =========================================================================
+    // These tests document and guard the intentional fail-fast behaviors.
+    // They should not be "fixed" to handle errors gracefully - the service
+    // MUST abort startup when these invariants are violated.
+    // See: startup_fatal_path.md
+
+    /// Test that DATABASE_URL without scheme panics.
+    /// FAIL-FAST CATEGORY: Required Config
+    #[test]
+    #[should_panic(expected = "must contain '://'")]
+    fn test_inject_password_panics_without_scheme() {
+        inject_password_into_url("invalid_url_without_scheme", "pw");
     }
 }
