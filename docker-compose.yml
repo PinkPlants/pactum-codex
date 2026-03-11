@@ -112,8 +112,7 @@ services:
       - arweave_wallet
     
     networks:
-      - frontend
-      - backend
+      - pactum
     
     depends_on:
       postgres:
@@ -161,7 +160,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
-      - backend
+      - pactum
     ports:
       # Exposed only for development/debugging. Remove in production.
       - "127.0.0.1:5432:5432"
@@ -197,9 +196,7 @@ volumes:
 # Networks
 # =============================================================================
 networks:
-  frontend:
-    driver: bridge
-  backend:
+  pactum:
     driver: bridge
     internal: false
 
