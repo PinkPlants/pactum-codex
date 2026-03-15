@@ -176,6 +176,22 @@ Evidence artifacts are written to:
 - `.sisyphus/evidence/task-13-compose-health.txt`
 - `.sisyphus/evidence/task-13-compose-degraded.txt`
 
+### Migration Verification
+
+Verify sweep_config migration is applied and working:
+
+```bash
+./scripts/verify_sweep_config.sh
+```
+
+This script checks:
+- Migration ledger contains the sweep_config migration
+- sweep_config table exists and is queryable
+- Keeper query succeeds
+- No "relation does not exist" errors in recent logs
+
+Returns non-zero exit code if any check fails.
+
 ## Troubleshooting
 
 ### Secret Files Not Found
