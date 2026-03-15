@@ -263,12 +263,17 @@ fn circuit_breaker_status(
 
 async fn sweep_treasury_excess(state: &AppState) {
     // Check if we should sweep today
-    let should_sweep: bool = sqlx::query_scalar(
-        "SELECT NOT EXISTS(SELECT 1 FROM sweep_config WHERE last_sweep_at > extract(epoch from now()) - 86400)"
+    let should_sweep = should_sweep_from_query_result(
+        sqlx::query_scalar::<_, bool>(
+        "SELECT NOT EXISTS(SELECT 1 FROM sweep_config WHERE last_sweep_at > extract(epoch from now()) - 86400)",
     )
     .fetch_one(&state.db)
-    .await
-    .unwrap_or(true);
+    .await,
+    );
+
+    let Some(should_sweep) = should_sweep else {
+        return;
+    };
 
     if !should_sweep {
         return;
@@ -329,6 +334,16 @@ async fn sweep_treasury_excess(state: &AppState) {
     .execute(&state.db)
     .await
     .ok();
+}
+
+fn should_sweep_from_query_result(result: Result<bool, sqlx::Error>) -> Option<bool> {
+    match result {
+        Ok(should) => Some(should),
+        Err(e) => {
+            tracing::error!("keeper: sweep_config query failed, skipping sweep: {e}");
+            None
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -482,5 +497,11 @@ mod tests {
 
         assert_eq!(maybe_status, Some(WorkerStatus::Disabled));
         assert_eq!(process_health.current(), ProcessHealth::Degraded);
+    }
+
+    #[test]
+    fn sweep_config_query_error_path_skips_sweep_without_panic() {
+        let should_sweep = should_sweep_from_query_result(Err(sqlx::Error::RowNotFound));
+        assert_eq!(should_sweep, None);
     }
 }
