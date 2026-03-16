@@ -51,6 +51,7 @@ use dashmap::DashMap;
 use solana_client::rpc_client::RpcClient;
 use sqlx::postgres::PgPoolOptions;
 use state::{AppState, ProcessHealth, ProcessHealthState, ProtectedKeypair, WsEvent};
+use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -304,7 +305,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Start server
     let listener = tokio::net::TcpListener::bind(&server_addr).await?;
     tracing::info!("🎉 Pactum backend listening on {}", server_addr);
-    axum::serve(listener, app).await?;
+    // tower-governor's default peer-IP extractor requires connect info.
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
 
     Ok(())
 }
